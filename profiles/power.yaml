@@ -1,0 +1,32 @@
+# Cairn, Power profile
+# Hybrid SQLite + ChromaDB, larger sliding window, conflict detection on.
+
+memory:
+  enabled: true
+  backend: hybrid          # SQLite + ChromaDB semantic search
+  async_store: true
+  sliding_window: 15
+  recency_boost: 1.5
+  decay:
+    enabled: true
+    half_life_days: 45
+  dedup:
+    enabled: true
+    threshold: 0.90        # more aggressive merge
+  conflict:
+    enabled: true
+    model: claude-haiku-4-5-20251001
+
+context:
+  max_tokens: 2000
+  summarize:
+    enabled: true
+    threshold_tokens: 1500
+    target_tokens: 500
+    model: groq/llama-3.3-70b-versatile
+
+memory_helper_model: claude-haiku-4-5-20251001
+
+# Setup:
+#   pip install cairn[helper,vector]
+#   export ANTHROPIC_API_KEY=...

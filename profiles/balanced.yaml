@@ -1,0 +1,24 @@
+# Cairn, Balanced profile
+# Decay-aware memory with hash dedup. Helper LLM via Groq's free tier.
+
+memory:
+  enabled: true
+  backend: sqlite
+  async_store: true
+  sliding_window: 10
+  recency_boost: 1.5
+  decay:
+    enabled: true
+    half_life_days: 30
+  dedup:
+    enabled: true
+    threshold: 0.92
+  conflict:
+    enabled: false        # opt-in (LLM-based, false-positive risk)
+    model: groq/llama-3.3-70b-versatile
+
+memory_helper_model: groq/llama-3.3-70b-versatile
+
+# Setup:
+#   pip install cairn[helper]
+#   export GROQ_API_KEY=...   # https://console.groq.com (free)

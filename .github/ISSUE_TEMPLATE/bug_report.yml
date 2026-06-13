@@ -1,0 +1,49 @@
+name: Bug Report
+description: I found a bug in Cairn
+title: "[BUG] "
+labels: ["bug", "triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Please fill in the form completely.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What's the problem?
+      description: What was supposed to happen, and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce?
+      description: Step by step
+      value: |
+        1. Run `cairn ...`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - Cairn version: (cairn version)
+        - Python version:
+        - OS:
+        - Provider/Model:
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security check
+      options:
+        - label: This report does not contain API keys or secrets
+          required: true

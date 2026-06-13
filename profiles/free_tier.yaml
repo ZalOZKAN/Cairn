@@ -1,0 +1,21 @@
+# Cairn, Free tier profile
+# Zero-cost setup. Helper model optional; memory + skills work without it.
+
+memory:
+  enabled: true
+  backend: sqlite
+  async_store: true
+  sliding_window: 10
+  decay:
+    enabled: true
+    half_life_days: 30
+  dedup:
+    enabled: true
+    threshold: 0.92
+
+memory_helper_model: groq/llama-3.3-70b-versatile
+
+# Setup:
+#   export GROQ_API_KEY=...   # https://console.groq.com (free)
+# Or skip the helper entirely:
+#   memory_helper_model: null

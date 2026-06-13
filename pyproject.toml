@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cairn"
+version = "0.5.0-dev0"
+description = "Portable memory store for AI coding agents, works with Claude Code, Cursor, Antigravity over MCP"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Cairn Contributors" }]
+keywords = ["ai-memory", "mcp", "agent-memory", "context-persistence", "coding-agent", "claude-code", "cursor", "antigravity", "memory-store"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov", "ruff", "mypy"]
+vector = ["chromadb>=0.5.0"]
+helper = ["litellm>=1.30.0"]   # only needed for extractor/manifest/summarize/conflict
+
+[project.scripts]
+cairn = "cairn.interface.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cairn*"]
+
+[tool.setuptools.package-data]
+"cairn" = ["agents/**/*.md", "workflows/**/*.md", "skills/**/*.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -1,0 +1,42 @@
+name: Feature Request
+description: Propose a new feature
+title: "[FEAT] "
+labels: ["enhancement"]
+
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Which problem does it solve?
+      description: "What can't you do right now?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should it work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Did you consider alternatives?
+      description: How are you solving it today?
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Memory
+        - Skills
+        - Workflows
+        - MCP integration
+        - CLI
+        - Security
+        - Other
+    validations:
+      required: true

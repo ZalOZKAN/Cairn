@@ -1,0 +1,75 @@
+"""Config loader v0.4, memory-focused, no router/cost section."""
+from __future__ import annotations
+
+import copy
+import os
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "memory": {
+        "enabled": True,
+        "backend": "sqlite",
+        "max_results": 5,
+        "db_path": "~/.cairn/memory.db",
+        "async_store": True,
+        "sliding_window": 10,
+        "recency_boost": 1.5,
+        "decay": {"enabled": True, "half_life_days": 30},
+        "dedup": {"enabled": True, "threshold": 0.92},
+        "conflict": {
+            "enabled": False,
+            "model": "groq/llama-3.3-70b-versatile",
+        },
+    },
+    "context": {
+        "enabled": True,
+        "max_tokens": 800,
+        "summarize": {
+            "enabled": False,
+            "threshold_tokens": 1200,
+            "target_tokens": 400,
+            "model": "groq/llama-3.3-70b-versatile",
+        },
+    },
+    # Single optional helper model used for memory housekeeping
+    # (extractor, manifest generation, conflict detection, summarization).
+    # If unset and the call is needed, the relevant feature is skipped.
+    "memory_helper_model": "groq/llama-3.3-70b-versatile",
+    "mcp": {"servers": []},
+}
+
+
+def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    search_paths = [
+        Path.home() / ".cairn" / "config.yaml",
+        Path.cwd() / ".cairn" / "config.yaml",
+    ]
+    if config_path:
+        search_paths.append(Path(config_path))
+    for path in search_paths:
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                user_config = yaml.safe_load(f) or {}
+            config = _deep_merge(config, user_config)
+    config["_api_keys"] = {
+        "anthropic": os.environ.get("ANTHROPIC_API_KEY"),
+        "openai": os.environ.get("OPENAI_API_KEY"),
+        "google": os.environ.get("GOOGLE_API_KEY"),
+        "groq": os.environ.get("GROQ_API_KEY"),
+    }
+    return config
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result

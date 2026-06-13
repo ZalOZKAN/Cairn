@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+*.db
+*.jsonl
+# Cairn dogfooding its own source tree: don't ship dev-time state.
+.cairn/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local AI development docs, not for public repo
+_dev/
+CHANGELOG.md
+
+# Per-machine Claude Code settings (personal paths, allowlists)
+.claude/settings.local.json
