@@ -24,6 +24,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": False,
             "model": "groq/llama-3.3-70b-versatile",
         },
+        "auto_save": {
+            "enabled": True,
+            "every_n_stores": 30,
+            "cooldown_minutes": 10,
+            "idle_minutes": 10,
+            "skip_if_helper_unavailable": True,
+        },
     },
     "context": {
         "enabled": True,

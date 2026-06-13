@@ -29,6 +29,10 @@ Tools exposed:
     memory_invalidate  , retire a memory by id with optional reason
     memory_boot        , session boot context
     memory_status      , current task + last handoff
+    record_decision    , first-class decision with reasoning/alternatives/evidence/supersedes
+    memory_get         , full record including evidence + supersedes chain
+    memory_thread      , chronological versions of a decision topic
+    decision_audit_score, completeness score 0/4..4/4 for a decision
     list_skills        , enumerate available skills
     get_skill          , return a skill's system-prompt markdown
     list_workflows     , enumerate workflows
@@ -40,6 +44,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +59,11 @@ class CairnMCPServer:
         self.project_dir = project_dir or Path.cwd()
         self._project = None  # lazy
         self._tools = self._define_tools()
+        # auto-save state (Phase 2 Stream A)
+        self._store_count = 0
+        self._last_save_at = 0.0
+        self._idle_timer: threading.Timer | None = None
+        self._autosave_lock = threading.Lock()
 
     # ---- project (lazy) -------------------------------------------------
 
@@ -66,24 +77,105 @@ class CairnMCPServer:
     # ---- main loop ------------------------------------------------------
 
     def run(self) -> None:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    request = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    response = self._handle(request)
+                except Exception as exc:  # surface protocol error
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request.get("id"),
+                        "error": {"code": -32603, "message": str(exc)},
+                    }
+                if response:
+                    self._send(response)
+        finally:
+            self._shutdown()
+
+    def _shutdown(self) -> None:
+        """Trigger #5: final flush + extract on EOF/SIGTERM."""
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+        if self._project is None:
+            return
+        try:
+            self._project.memory.flush()
+            self._maybe_autosave(force=True, reason="shutdown")
+            self._project.memory.close()
+        except Exception:
+            pass
+
+    # ---- auto-save (Phase 2 Stream A) -----------------------------------
+
+    def _autosave_cfg(self) -> dict:
+        return (self.project.config.get("memory", {}) or {}).get("auto_save", {}) or {}
+
+    def _on_store(self) -> None:
+        """Called after every successful memory_store. Handles triggers #2 and #4."""
+        cfg = self._autosave_cfg()
+        if not cfg.get("enabled", True):
+            return
+        self._store_count += 1
+        every = int(cfg.get("every_n_stores", 30))
+        cooldown = float(cfg.get("cooldown_minutes", 10)) * 60.0
+        now = time.monotonic()
+        if every > 0 and self._store_count % every == 0 and (now - self._last_save_at) >= cooldown:
+            self._spawn_autosave("threshold")
+        idle_seconds = float(cfg.get("idle_minutes", 10)) * 60.0
+        if idle_seconds > 0:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+            t = threading.Timer(idle_seconds, self._spawn_autosave, args=("idle",))
+            t.daemon = True
+            t.start()
+            self._idle_timer = t
+
+    def _spawn_autosave(self, reason: str) -> None:
+        t = threading.Thread(
+            target=self._maybe_autosave,
+            kwargs={"reason": reason},
+            name=f"cairn-autosave-{reason}",
+            daemon=True,
+        )
+        t.start()
+
+    def _maybe_autosave(self, reason: str, force: bool = False) -> dict | None:
+        """Run extractor over recent session entries. Returns extraction dict or None."""
+        if not self._autosave_lock.acquire(blocking=False):
+            return None
+        try:
+            cfg = self._autosave_cfg()
+            if not force and not cfg.get("enabled", True):
+                return None
             try:
-                request = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+                from cairn.memory.extractor import MemoryExtractor
+                extractor = MemoryExtractor(self.project)
+            except Exception:
+                return None
+            recent = self.project.memory.recent(n=30)
+            if not recent:
+                return None
+            entries = [
+                {"prompt": r["prompt"], "response": r["response"], "timestamp": r["timestamp"]}
+                for r in recent
+            ]
             try:
-                response = self._handle(request)
-            except Exception as exc:  # surface protocol error
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request.get("id"),
-                    "error": {"code": -32603, "message": str(exc)},
-                }
-            if response:
-                self._send(response)
+                extraction = extractor.extract_from_session(entries)
+            except Exception:
+                return None
+            if cfg.get("skip_if_helper_unavailable", True) and extraction.get("_error"):
+                return None
+            self._last_save_at = time.monotonic()
+            return extraction
+        finally:
+            self._autosave_lock.release()
 
     def _handle(self, request: dict) -> dict | None:
         method = request.get("method", "")
@@ -182,6 +274,44 @@ class CairnMCPServer:
                   "Return an agent role markdown.",
                   {"name": _str("e.g. adversary")},
                   required=["name"]),
+            _tool("record_decision",
+                  "Record a first-class decision. If this is a decision, please also pass "
+                  "reasoning and at least one alternative so future-you can audit the choice.",
+                  {"decision": _str("The decision in one sentence"),
+                   "reasoning": _str("Why we chose this", default=""),
+                   "alternatives": {"type": "array",
+                                    "description": "Rejected options",
+                                    "items": {"type": "object", "properties": {
+                                        "option": {"type": "string"},
+                                        "rejected_because": {"type": "string"}}}},
+                   "evidence": {"type": "array",
+                                "description": "Supporting sources/claims",
+                                "items": {"type": "object", "properties": {
+                                    "source": {"type": "string"},
+                                    "claim": {"type": "string"}}}},
+                   "supersedes": _int("Prior decision id this replaces"),
+                   "chose_because": _str("Short tag for the deciding factor", default=""),
+                   "importance": _int("1=normal, 2=decision, 3=critical", default=2)},
+                  required=["decision"]),
+            _tool("memory_get",
+                  "Full record for a memory id: reasoning, alternatives, evidence, supersedes chain.",
+                  {"id": _int("Memory row id")},
+                  required=["id"]),
+            _tool("memory_thread",
+                  "Chronological versions of a decision topic. Pass an id to walk the "
+                  "supersedes chain, or a string for keyword-overlap grouping.",
+                  {"topic_or_id": _str("Topic keyword OR a numeric id as string"),
+                   "limit": _int("Max entries", default=20)},
+                  required=["topic_or_id"]),
+            _tool("decision_audit_score",
+                  "Completeness score 0/4..4/4 for a decision: reasoning, alternatives, evidence, supersedes.",
+                  {"id": _int("Decision row id")},
+                  required=["id"]),
+            _tool("memory_save",
+                  "Run the helper-LLM extractor over recent session entries. Hosts should "
+                  "call this at session boundaries (handoff, before exit) so structured "
+                  "memory survives the next session.",
+                  {}),
         ]
 
 
@@ -199,7 +329,22 @@ def _h_store(srv: CairnMCPServer, args: dict) -> str:
         importance=int(args.get("importance", 1)),
     )
     srv.project.memory.flush()
+    srv._on_store()
     return "stored"
+
+
+def _h_memory_save(srv: CairnMCPServer, args: dict) -> str:
+    """Trigger #1: explicit MCP memory_save tool. Hosts call at session boundaries."""
+    extraction = srv._maybe_autosave(reason="explicit", force=True)
+    if extraction is None:
+        return "no extraction (helper unavailable or no recent entries)"
+    return json.dumps({
+        "ok": True,
+        "facts": len(extraction.get("facts", [])),
+        "decisions": len(extraction.get("decisions", [])),
+        "tasks_completed": len(extraction.get("tasks_completed", [])),
+        "tasks_in_progress": len(extraction.get("tasks_in_progress", [])),
+    }, ensure_ascii=False)
 
 
 def _h_recent(srv: CairnMCPServer, args: dict) -> str:
@@ -260,6 +405,42 @@ def _h_get_agent(srv: CairnMCPServer, args: dict) -> str:
     return srv.project.get_agent(args["name"]) or "(not found)"
 
 
+def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
+    new_id = srv.project.memory.record_decision(
+        decision=args["decision"],
+        reasoning=args.get("reasoning") or None,
+        alternatives=args.get("alternatives") or None,
+        evidence=args.get("evidence") or None,
+        supersedes=int(args["supersedes"]) if args.get("supersedes") is not None else None,
+        chose_because=args.get("chose_because") or None,
+        importance=int(args.get("importance", 2)),
+    )
+    return json.dumps({"id": new_id, "kind": "decision"}, ensure_ascii=False)
+
+
+def _h_memory_get(srv: CairnMCPServer, args: dict) -> str:
+    full = srv.project.memory.get_full(int(args["id"]))
+    return json.dumps(full, ensure_ascii=False, indent=2) if full else "(not found)"
+
+
+def _h_memory_thread(srv: CairnMCPServer, args: dict) -> str:
+    raw = args["topic_or_id"]
+    target: int | str
+    try:
+        target = int(raw)
+    except (ValueError, TypeError):
+        target = str(raw)
+    rows = srv.project.memory.thread(target, limit=int(args.get("limit", 20)))
+    return json.dumps(rows, ensure_ascii=False, indent=2)
+
+
+def _h_decision_audit_score(srv: CairnMCPServer, args: dict) -> str:
+    return json.dumps(
+        srv.project.memory.decision_audit_score(int(args["id"])),
+        ensure_ascii=False, indent=2,
+    )
+
+
 _TOOL_HANDLERS = {
     "memory_recall": _h_recall,
     "memory_store": _h_store,
@@ -274,6 +455,11 @@ _TOOL_HANDLERS = {
     "get_workflow": _h_get_workflow,
     "list_agents": _h_list_agents,
     "get_agent": _h_get_agent,
+    "record_decision": _h_record_decision,
+    "memory_get": _h_memory_get,
+    "memory_thread": _h_memory_thread,
+    "decision_audit_score": _h_decision_audit_score,
+    "memory_save": _h_memory_save,
 }
 
 

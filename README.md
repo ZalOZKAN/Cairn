@@ -25,18 +25,51 @@ that lives next to your code.
 ## 30-second install
 
 ```bash
-pip install cairn
+pip install cairn-memory
 cd ~/my-project
 cairn init
 cairn mcp config --host claude-code   # (or cursor, antigravity, generic)
 ```
 
 Paste the printed JSON into your IDE's MCP config, restart, and the agent
-gets thirteen memory tools, `memory_recall`, `memory_store`,
-`memory_invalidate`, `get_skill`, and friends, without you writing a line
-of glue code.
+gets eighteen memory tools, `memory_recall`, `memory_store`, `memory_invalidate`,
+`record_decision`, `memory_thread`, `decision_audit_score`, `get_skill`, and
+friends, without you writing a line of glue code.
 
 ![Claude Code demo](docs/demos/claude-code.gif)
+
+---
+
+## Argue with your past self
+
+The differentiator: Cairn records decisions with reasoning, alternatives,
+evidence, and a supersedes chain, so your agent can recall not just *what*
+you decided, but *why*, and what else you considered.
+
+```
+You:    The JWT cookie decision, was that final?
+Claude: [calls memory_thread("JWT") → finds chain ending at id 67]
+        [calls memory_get(67) → reads reasoning, alternatives, evidence]
+        "Yes, decision #67, recorded 2026-06-13. We chose httpOnly cookie
+         over localStorage to close the XSS token-exfiltration vector.
+         The prior approach (#42, localStorage) was superseded for that
+         reason. Would you like to revisit it?"
+
+You:    What's changed since then?
+Claude: [calls memory_thread(67) → no newer entries]
+        "Nothing, #67 is still the active decision."
+```
+
+Open the dashboard to see the full provenance graph in your browser:
+
+```bash
+cairn memory dashboard --open
+```
+
+Single self-contained HTML file. No server, no telemetry, just card grid,
+timeline, and audit-score badges showing how complete each decision's record is.
+
+![Argue with past self](docs/demos/argue-with-past-self.gif)
 
 ---
 
@@ -128,6 +161,7 @@ cairn memory search "jwt"               # substring search
 cairn memory invalidate 42 --reason "schema migrated"
 cairn memory manifest                   # generate context-manifest.md (uses helper model)
 cairn memory status                     # current task + handoff
+cairn memory dashboard --open           # single-file HTML decision dashboard
 
 # Skills (read-only)
 cairn skills                            # list available skills

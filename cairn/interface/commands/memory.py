@@ -220,6 +220,17 @@ def memory_invalidate(
         )
 
 
+@memory_app.command("dashboard")
+def memory_dashboard(
+    open_browser: bool = typer.Option(False, "--open", help="Open in default browser after writing"),
+    filt: str = typer.Option("all", "--filter", help="all | active | invalidated | recent"),
+    fmt: str = typer.Option("html", "--format", help="html | json"),
+):
+    """Generate the project decision dashboard (single-file HTML)."""
+    from cairn.interface.commands.dashboard import dashboard_command
+    dashboard_command(open_browser=open_browser, filt=filt, fmt=fmt)
+
+
 @memory_app.command("clear")
 def memory_clear(
     confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),

@@ -86,17 +86,32 @@ class Memory:
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        """Add the temporal/dedup columns to an old schema (idempotent)."""
+        """Add temporal/dedup/provenance columns + evidence table (idempotent)."""
         existing = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
         adds = [
             ("content_hash", "TEXT"),
             ("valid_from", "TEXT"),
             ("valid_until", "TEXT"),
             ("invalidated_reason", "TEXT"),
+            ("kind", "TEXT DEFAULT 'memory'"),
+            ("reasoning", "TEXT"),
+            ("alternatives_json", "TEXT"),
+            ("superseded_by", "INTEGER"),
+            ("chose_because", "TEXT"),
         ]
         for col, typ in adds:
             if col not in existing:
                 conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {typ}")
+        conn.execute("""CREATE TABLE IF NOT EXISTS memory_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            source TEXT,
+            claim TEXT,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_mem ON memory_evidence(memory_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kind ON memories(kind)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_superseded_by ON memories(superseded_by)")
         conn.commit()
 
     def _init_chroma(self, base_dir: Path):
@@ -302,6 +317,161 @@ class Memory:
                     (session_id, p),
                 )
             conn.commit()
+
+    # ------------------------- decision provenance -------------------------
+
+    def record_decision(
+        self,
+        decision: str,
+        reasoning: str | None = None,
+        alternatives: list[dict] | None = None,
+        evidence: list[dict] | None = None,
+        supersedes: int | None = None,
+        chose_because: str | None = None,
+        importance: int = 2,
+    ) -> int:
+        """Insert a decision row synchronously and return its id.
+
+        alternatives: [{"option": str, "rejected_because": str}, ...]
+        evidence:     [{"source": str, "claim": str}, ...]
+        supersedes:   prior decision id; if set, that row is invalidated and
+                      its superseded_by is filled.
+        """
+        import json as _json
+
+        self.flush()
+        now = datetime.now(timezone.utc).isoformat()
+        alts_json = _json.dumps(alternatives or [], ensure_ascii=False) if alternatives else None
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
+                "content_hash, valid_from, kind, reasoning, alternatives_json, chose_because) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    now,
+                    decision,
+                    reasoning or "",
+                    self._extract_keywords(decision + " " + (reasoning or "")),
+                    importance,
+                    self._content_hash(decision, reasoning or ""),
+                    now,
+                    "decision",
+                    reasoning,
+                    alts_json,
+                    chose_because,
+                ),
+            )
+            new_id = cursor.lastrowid
+            for ev in evidence or []:
+                conn.execute(
+                    "INSERT INTO memory_evidence (memory_id, source, claim) VALUES (?,?,?)",
+                    (new_id, ev.get("source"), ev.get("claim")),
+                )
+            if supersedes is not None:
+                conn.execute(
+                    "UPDATE memories SET valid_until=?, invalidated_reason=?, superseded_by=? "
+                    "WHERE id=? AND valid_until IS NULL",
+                    (now, f"superseded by #{new_id}", new_id, supersedes),
+                )
+            conn.commit()
+        return new_id
+
+    def get_full(self, mem_id: int) -> dict | None:
+        """Return a full memory row including evidence + supersedes chain pointers."""
+        import json as _json
+
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT id, timestamp, prompt, response, keywords, importance, "
+                "valid_from, valid_until, invalidated_reason, kind, reasoning, "
+                "alternatives_json, superseded_by, chose_because "
+                "FROM memories WHERE id=?",
+                (mem_id,),
+            ).fetchone()
+            if not row:
+                return None
+            evidence = [
+                {"source": s, "claim": c}
+                for s, c in conn.execute(
+                    "SELECT source, claim FROM memory_evidence WHERE memory_id=?",
+                    (mem_id,),
+                ).fetchall()
+            ]
+            supersedes_id = conn.execute(
+                "SELECT id FROM memories WHERE superseded_by=?", (mem_id,)
+            ).fetchone()
+        out = {
+            "id": row[0], "timestamp": row[1], "decision": row[2], "response": row[3],
+            "keywords": row[4], "importance": row[5], "valid_from": row[6],
+            "valid_until": row[7], "invalidated_reason": row[8], "kind": row[9],
+            "reasoning": row[10],
+            "alternatives": _json.loads(row[11]) if row[11] else [],
+            "superseded_by": row[12], "chose_because": row[13],
+            "supersedes": supersedes_id[0] if supersedes_id else None,
+            "evidence": evidence,
+        }
+        return out
+
+    def thread(self, topic_or_id: str | int, limit: int = 20) -> list[dict]:
+        """Chronological list of decision versions on the same topic.
+
+        If int: walk the supersedes chain (newest first → oldest).
+        If str: keyword-overlap group across decisions.
+        """
+        rows: list[dict] = []
+        with sqlite3.connect(self.db_path) as conn:
+            if isinstance(topic_or_id, int):
+                seen: set[int] = set()
+                current: int | None = topic_or_id
+                while current is not None and current not in seen and len(rows) < limit:
+                    seen.add(current)
+                    r = conn.execute(
+                        "SELECT id, timestamp, prompt, kind, valid_until, superseded_by "
+                        "FROM memories WHERE id=?",
+                        (current,),
+                    ).fetchone()
+                    if not r:
+                        break
+                    rows.append({
+                        "id": r[0], "timestamp": r[1], "decision": r[2],
+                        "kind": r[3], "active": r[4] is None,
+                    })
+                    current = r[5]
+            else:
+                keywords = set(self._extract_keywords(str(topic_or_id)).split(","))
+                if not keywords:
+                    return []
+                all_rows = conn.execute(
+                    "SELECT id, timestamp, prompt, keywords, kind, valid_until "
+                    "FROM memories WHERE kind='decision' ORDER BY timestamp ASC LIMIT 500"
+                ).fetchall()
+                for rid, ts, p, kw, kind, vu in all_rows:
+                    if not kw:
+                        continue
+                    if keywords & set(kw.split(",")):
+                        rows.append({
+                            "id": rid, "timestamp": ts, "decision": p,
+                            "kind": kind, "active": vu is None,
+                        })
+                        if len(rows) >= limit:
+                            break
+        return rows
+
+    def decision_audit_score(self, mem_id: int) -> dict:
+        """Return completeness score for a decision: 0-4 of {reasoning, alternatives, evidence, supersedes}."""
+        full = self.get_full(mem_id)
+        if not full:
+            return {"id": mem_id, "score": 0, "total": 4, "missing": ["not_found"]}
+        checks = {
+            "has_reasoning": bool(full.get("reasoning")),
+            "has_alternatives": bool(full.get("alternatives")),
+            "has_evidence": bool(full.get("evidence")),
+            "has_supersedes": full.get("supersedes") is not None or full.get("superseded_by") is not None,
+        }
+        score = sum(1 for v in checks.values() if v)
+        missing = [k for k, v in checks.items() if not v]
+        return {"id": mem_id, "score": score, "total": 4, "checks": checks, "missing": missing}
 
     # ------------------------- temporal (γ) -------------------------
 

@@ -137,6 +137,150 @@ def test_get_agent_returns_markdown(srv):
     assert md and md != "(not found)"
 
 
+# --- decision provenance (Phase 2 Stream B) ------------------------------
+
+def test_record_decision_minimum_then_get(srv):
+    raw = _call(srv, "record_decision", {"decision": "Use SQLite for local dev"})
+    new_id = json.loads(raw)["id"]
+    full = json.loads(_call(srv, "memory_get", {"id": new_id}))
+    assert full["decision"] == "Use SQLite for local dev"
+    assert full["kind"] == "decision"
+    assert full["alternatives"] == []
+    assert full["evidence"] == []
+
+
+def test_record_decision_with_alternatives_and_evidence(srv):
+    raw = _call(srv, "record_decision", {
+        "decision": "Use httpOnly cookies for JWT",
+        "reasoning": "Mitigates XSS token exfil",
+        "alternatives": [{"option": "localStorage", "rejected_because": "XSS"}],
+        "evidence": [{"source": "OWASP cheatsheet", "claim": "httpOnly blocks JS read"}],
+        "chose_because": "security",
+    })
+    new_id = json.loads(raw)["id"]
+    score = json.loads(_call(srv, "decision_audit_score", {"id": new_id}))
+    # has reasoning + alternatives + evidence; no supersedes yet
+    assert score["score"] == 3
+    assert "has_supersedes" in score["missing"]
+
+
+def test_memory_thread_walks_supersedes_chain(srv):
+    a = json.loads(_call(srv, "record_decision", {"decision": "Use localStorage for JWT"}))["id"]
+    b = json.loads(_call(srv, "record_decision",
+                         {"decision": "Use httpOnly cookies for JWT", "supersedes": a}))["id"]
+    c = json.loads(_call(srv, "record_decision",
+                         {"decision": "Add CSRF token on top of httpOnly cookies",
+                          "supersedes": b}))["id"]
+    # walking by id (passed as string into the MCP tool)
+    chain = json.loads(_call(srv, "memory_thread", {"topic_or_id": str(a)}))
+    assert [r["id"] for r in chain] == [a, b, c]
+    assert chain[-1]["active"] is True
+    assert chain[0]["active"] is False
+
+
+def test_memory_thread_by_keyword(srv):
+    _call(srv, "record_decision", {"decision": "Use SQLite for local development storage"})
+    _call(srv, "record_decision", {"decision": "Use Redis for cache layer"})
+    matches = json.loads(_call(srv, "memory_thread", {"topic_or_id": "SQLite storage"}))
+    assert any("SQLite" in r["decision"] for r in matches)
+    assert all("Redis" not in r["decision"] for r in matches)
+
+
+# --- auto-save triggers (Phase 2 Stream A) -------------------------------
+
+def _stub_helper(srv, payload: dict | None):
+    """Patch project.helper_call to return a fixed JSON string (or None)."""
+    if payload is None:
+        srv.project.helper_call = lambda prompt, system=None: None  # type: ignore
+    else:
+        srv.project.helper_call = lambda prompt, system=None: json.dumps(payload)  # type: ignore
+
+
+def test_memory_save_tool_returns_no_extraction_when_helper_unavailable(srv):
+    _stub_helper(srv, None)
+    _call(srv, "memory_store", {"prompt": "p", "response": "r"})
+    out = _call(srv, "memory_save", {})
+    assert "no extraction" in out
+
+
+def test_memory_save_tool_reports_counts_when_helper_works(srv):
+    _stub_helper(srv, {
+        "facts": ["sqlite is used"],
+        "decisions": [{"decision": "use sqlite", "reason": "no infra"}],
+        "tasks_completed": [],
+        "tasks_in_progress": [],
+        "errors_solved": [],
+        "next_session_start": "",
+    })
+    _call(srv, "memory_store", {"prompt": "decided on sqlite", "response": "no infra"})
+    out = json.loads(_call(srv, "memory_save", {}))
+    assert out["ok"] is True
+    assert out["facts"] == 1
+    assert out["decisions"] == 1
+
+
+def test_n_store_threshold_fires_autosave(srv, monkeypatch):
+    """Trigger #2: after every_n_stores, autosave should be spawned (we mock the spawn)."""
+    fired: list[str] = []
+    monkeypatch.setattr(srv, "_spawn_autosave", lambda reason: fired.append(reason))
+    srv.project.config.setdefault("memory", {}).setdefault("auto_save", {})
+    srv.project.config["memory"]["auto_save"].update({
+        "enabled": True, "every_n_stores": 3,
+        "cooldown_minutes": 0, "idle_minutes": 0,
+    })
+    for i in range(3):
+        _call(srv, "memory_store", {"prompt": f"p{i}", "response": f"r{i}"})
+    assert "threshold" in fired
+
+
+def test_idle_timer_resets_on_each_store(srv, monkeypatch):
+    """Trigger #4: idle Timer is set/reset by store events."""
+    srv.project.config.setdefault("memory", {}).setdefault("auto_save", {})
+    srv.project.config["memory"]["auto_save"].update({
+        "enabled": True, "every_n_stores": 999,
+        "cooldown_minutes": 0, "idle_minutes": 60,
+    })
+    assert srv._idle_timer is None
+    _call(srv, "memory_store", {"prompt": "p1", "response": "r1"})
+    first = srv._idle_timer
+    assert first is not None
+    _call(srv, "memory_store", {"prompt": "p2", "response": "r2"})
+    assert srv._idle_timer is not first  # got replaced
+    # cleanup
+    if srv._idle_timer:
+        srv._idle_timer.cancel()
+
+
+def test_shutdown_cancels_timer_and_flushes(srv, monkeypatch):
+    """Trigger #5: _shutdown cancels idle timer; safe even with no project."""
+    srv.project.config.setdefault("memory", {}).setdefault("auto_save", {})
+    srv.project.config["memory"]["auto_save"].update({
+        "enabled": True, "every_n_stores": 999,
+        "cooldown_minutes": 0, "idle_minutes": 60,
+    })
+    _call(srv, "memory_store", {"prompt": "p", "response": "r"})
+    timer = srv._idle_timer
+    assert timer is not None
+    autosave_calls: list[dict] = []
+    monkeypatch.setattr(srv, "_maybe_autosave",
+                        lambda reason, force=False: autosave_calls.append({"reason": reason, "force": force}) or None)
+    srv._shutdown()
+    # threading.Timer.cancel() sets .finished even if the thread hasn't joined yet
+    assert timer.finished.is_set()
+    assert autosave_calls and autosave_calls[0]["force"] is True
+
+
+def test_autosave_disabled_skips_triggers(srv, monkeypatch):
+    fired: list[str] = []
+    monkeypatch.setattr(srv, "_spawn_autosave", lambda reason: fired.append(reason))
+    srv.project.config.setdefault("memory", {}).setdefault("auto_save", {})
+    srv.project.config["memory"]["auto_save"]["enabled"] = False
+    for _ in range(5):
+        _call(srv, "memory_store", {"prompt": "p", "response": "r"})
+    assert fired == []
+    assert srv._idle_timer is None
+
+
 # --- error handling ------------------------------------------------------
 
 def test_unknown_tool_returns_text(srv):
