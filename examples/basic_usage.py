@@ -2,7 +2,7 @@
 Cairn, basic usage examples.
 
 Run:
-  pip install cairn
+  pip install cairn-memory
   python examples/basic_usage.py
 """
 from __future__ import annotations

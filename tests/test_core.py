@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import tempfile
 
-import pytest
 
 from cairn.config.loader import load_config
 from cairn.memory.memory import Memory

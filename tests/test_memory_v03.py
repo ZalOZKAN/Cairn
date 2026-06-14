@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import tempfile
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -65,7 +64,6 @@ def test_hash_dedup_merges_identical_entries():
         mem.store("same prompt", "same response")
         mem.store("same prompt", "same response")
         mem.store("same prompt", "same response")
-        rows = mem.recent(10)
         # Single row, but importance should be bumped (verify in the DB)
         import sqlite3
         with sqlite3.connect(mem.db_path) as conn:
@@ -146,7 +144,7 @@ def test_migration_adds_v03_columns_to_legacy_schema():
         config = load_config()
         config["memory"]["db_path"] = db
         config["memory"]["async_store"] = False
-        mem = Memory(config)
+        Memory(config)  # constructor triggers _migrate; side-effect is the assertion target
 
         with sqlite3.connect(db) as conn:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}

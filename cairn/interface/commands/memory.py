@@ -23,7 +23,7 @@ def memory_save(
     from cairn.memory.extractor import MemoryExtractor
 
     session_mgr = SessionManager()
-    state = session_mgr.load_state()
+    session_mgr.load_state()
 
     if no_extract:
         extraction = {}
@@ -113,7 +113,7 @@ def memory_status():
 
     handoff = session_mgr.load_handoff()
     if handoff:
-        lines = [l for l in handoff.split("\n") if l.strip()][:5]
+        lines = [ln for ln in handoff.split("\n") if ln.strip()][:5]
         console.print(Panel("\n".join(lines), title="Last handoff", border_style="dim"))
 
 
@@ -169,7 +169,7 @@ def memory_search(
         content = session_mgr.load_memory_file(fname)
         if query.lower() in content.lower():
             results_found = True
-            lines = [l for l in content.split("\n") if query.lower() in l.lower()]
+            lines = [ln for ln in content.split("\n") if query.lower() in ln.lower()]
             console.print(f"\n[cyan]{fname}:[/cyan]")
             for line in lines[:5]:
                 console.print(f"  {line.strip()}")

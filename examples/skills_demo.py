@@ -5,7 +5,7 @@ Cairn loads skills and workflows as markdown, it does not execute them.
 The IDE (Claude Code, Cursor, ...) takes the markdown and runs the LLM.
 
 Run:
-  pip install cairn
+  pip install cairn-memory
   python examples/skills_demo.py
 """
 from __future__ import annotations

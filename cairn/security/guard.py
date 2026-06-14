@@ -13,7 +13,6 @@ This module scans input before every LLM call.
 from __future__ import annotations
 
 import re
-import os
 from pathlib import Path
 
 
@@ -82,9 +81,9 @@ class SecurityGuard:
                 if self.log_threats:
                     self._log_threat("injection_attempt", prompt[:200], threat)
                 if self.strict:
-                    return False, f"Potential prompt injection detected"
+                    return False, "Potential prompt injection detected"
                 # Non-strict: warn but continue
-                return True, f"[WARNING: suspicious pattern detected, proceeding with caution]"
+                return True, "[WARNING: suspicious pattern detected, proceeding with caution]"
 
         return True, ""
 
@@ -95,10 +94,6 @@ class SecurityGuard:
         """
         p = Path(path).resolve()
 
-        # Path-traversal check
-        cwd = Path.cwd().resolve()
-        home = Path.home().resolve()
-
         # Unsafe extension
         if p.suffix.lower() in UNSAFE_EXTENSIONS:
             return False, f"Unsafe file extension: {p.suffix}"
@@ -108,7 +103,7 @@ class SecurityGuard:
         path_str = str(p)
         for blocked in blocked_paths:
             if blocked in path_str:
-                return False, f"Access to system files not allowed"
+                return False, "Access to system files not allowed"
 
         return True, ""
 

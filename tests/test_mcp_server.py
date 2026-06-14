@@ -91,8 +91,6 @@ def test_memory_recent_and_search(srv):
 
 def test_memory_invalidate_hides_entry(srv):
     _call(srv, "memory_store", {"prompt": "temporary fact", "response": "old answer"})
-    recent = json.loads(_call(srv, "memory_recent", {"n": 5}))
-    row_id = None
     # need to look up id via direct sqlite, recent doesn't return ids
     import sqlite3
     with sqlite3.connect(srv.project.memory.db_path) as conn:

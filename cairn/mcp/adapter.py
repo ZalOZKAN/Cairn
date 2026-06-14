@@ -71,7 +71,6 @@ class MCPAdapter:
 
     def _filesystem_tool(self, tool: str, params: dict) -> str:
         """Local implementation of filesystem MCP tools."""
-        import os
         from pathlib import Path
 
         if tool == "read_file":

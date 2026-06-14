@@ -1,7 +1,6 @@
 """Dashboard generator tests (Phase 2 Stream C)."""
 from __future__ import annotations
 
-import json
 import tempfile
 from pathlib import Path
 
@@ -10,7 +9,6 @@ import pytest
 from cairn.interface.commands.dashboard import (
     collect_dashboard_data,
     render_dashboard_html,
-    write_dashboard,
 )
 from cairn.memory.memory import Memory
 
