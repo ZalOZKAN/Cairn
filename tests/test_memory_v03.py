@@ -149,3 +149,39 @@ def test_migration_adds_v03_columns_to_legacy_schema():
         with sqlite3.connect(db) as conn:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
         assert {"content_hash", "valid_from", "valid_until", "invalidated_reason"} <= cols
+
+
+def test_recall_header_metadata():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir)
+        mem.store("test recall header prompt", "test recall header response")
+        out = mem.recall("test recall header prompt")
+        assert "[#1 · memory ·" in out
+        assert "Q: test recall header prompt\nA: test recall header response" in out
+
+
+def test_dedup_importance_limit_and_decision_exclusion():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir)
+        for _ in range(10):
+            mem.store("limit test prompt", "limit test response")
+        import sqlite3
+        with sqlite3.connect(mem.db_path) as conn:
+            imp = conn.execute("SELECT importance FROM memories WHERE id=1").fetchone()[0]
+        assert imp == 5
+
+        dec_id = mem.record_decision("limit test prompt", reasoning="limit test response")
+        mem.store("limit test prompt", "limit test response")
+        with sqlite3.connect(mem.db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        assert count == 3
+
+
+def test_3_letter_keyword_and_fts5():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir)
+        mem.store("use httpOnly cookies for jwt to avoid xss", "recommended for security")
+        kws = mem._extract_keywords("use httpOnly cookies for jwt to avoid xss")
+        assert "jwt" in kws.split(",")
+        out = mem.recall("jwt cookies")
+        assert "recommended for security" in out

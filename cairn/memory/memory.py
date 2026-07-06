@@ -19,6 +19,13 @@ from pathlib import Path
 from cairn.memory.decay import decayed_score, DEFAULT_HALF_LIFE_DAYS
 
 
+def sqlite_connect(db_path: Path | str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    return conn
+
+
 _SENTINEL = object()
 
 
@@ -53,6 +60,9 @@ class Memory:
 
         self._session: list[dict] = []
         self._chroma = None
+        self._failed_writes = 0
+
+        self.fts5_enabled = False
 
         if self.enabled:
             self._init_sqlite()
@@ -64,7 +74,7 @@ class Memory:
     # ------------------------- init / lifecycle -------------------------
 
     def _init_sqlite(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
@@ -83,6 +93,37 @@ class Memory:
             self._migrate(conn)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_hash ON memories(content_hash)")
             conn.commit()
+            self._init_fts5(conn)
+
+    def _init_fts5(self, conn: sqlite3.Connection):
+        self.fts5_enabled = False
+        try:
+            conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                prompt,
+                response,
+                content=memories,
+                content_rowid=id
+            )""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON memories BEGIN
+              INSERT INTO memories_fts(rowid, prompt, response) VALUES (new.id, new.prompt, new.response);
+            END;""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_memories_ad AFTER DELETE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, prompt, response) VALUES('delete', old.id, old.prompt, old.response);
+            END;""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_memories_au AFTER UPDATE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, prompt, response) VALUES('delete', old.id, old.prompt, old.response);
+              INSERT INTO memories_fts(rowid, prompt, response) VALUES (new.id, new.prompt, new.response);
+            END;""")
+            
+            count_mem = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            count_fts = conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]
+            if count_mem > 0 and count_fts == 0:
+                conn.execute("INSERT INTO memories_fts(rowid, prompt, response) SELECT id, prompt, response FROM memories")
+            conn.commit()
+            self.fts5_enabled = True
+        except sqlite3.OperationalError as e:
+            import sys
+            print(f"FTS5 initialization warning (using legacy fallback): {e}", file=sys.stderr)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -122,8 +163,10 @@ class Memory:
                 name="cairn_memory",
                 metadata={"hnsw:space": "cosine"},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            import sys
+            print(f"Chroma init error: {e}", file=sys.stderr)
+            self._failed_writes += 1
 
     def _start_writer(self) -> None:
         t = threading.Thread(target=self._writer_loop, name="cairn-memory-writer", daemon=True)
@@ -137,8 +180,10 @@ class Memory:
                 if item is _SENTINEL:
                     return
                 self._write_entry(item)
-            except Exception:
-                pass
+            except Exception as e:
+                import sys
+                print(f"Async writer error: {e}", file=sys.stderr)
+                self._failed_writes += 1
             finally:
                 self._write_queue.task_done()
 
@@ -179,7 +224,7 @@ class Memory:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "prompt": prompt,
             "response": response,
-            "keywords": self._extract_keywords(prompt + " " + response[:200]),
+            "keywords": self._extract_keywords(prompt + " " + response[:1000]),
             "importance": importance,
             "content_hash": self._content_hash(prompt, response),
         }
@@ -198,7 +243,7 @@ class Memory:
         except ImportError:
             pass
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
                 "content_hash, valid_from) VALUES (?,?,?,?,?,?,?)",
@@ -214,6 +259,7 @@ class Memory:
             )
             row_id = cursor.lastrowid
             conn.commit()
+        entry["id"] = row_id
         if self._chroma:
             try:
                 self._chroma.add(
@@ -221,8 +267,10 @@ class Memory:
                     ids=[str(row_id)],
                     metadatas=[{"prompt": entry["prompt"][:200], "timestamp": entry["timestamp"]}],
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                import sys
+                print(f"Chroma add error: {e}", file=sys.stderr)
+                self._failed_writes += 1
 
     # ------------------------- recall -------------------------
 
@@ -234,35 +282,110 @@ class Memory:
         if self._chroma:
             try:
                 res = self._chroma.query(query_texts=[prompt], n_results=min(limit, 3))
-                for doc, meta in zip(res["documents"][0], res["metadatas"][0]):
-                    results.append({"content": doc, "prompt": meta.get("prompt", "")})
-            except Exception:
-                pass
+                if res and "documents" in res and res["documents"] and len(res["documents"]) > 0:
+                    for doc, meta, doc_id in zip(res["documents"][0], res["metadatas"][0], res["ids"][0]):
+                        try:
+                            db_id = int(doc_id)
+                            with sqlite_connect(self.db_path) as conn:
+                                row = conn.execute(
+                                    "SELECT kind, timestamp, prompt, response FROM memories "
+                                    "WHERE id = ? AND valid_until IS NULL", (db_id,)
+                                ).fetchone()
+                            if row:
+                                results.append({
+                                    "id": db_id,
+                                    "kind": row[0] or "memory",
+                                    "timestamp": row[1],
+                                    "prompt": row[2],
+                                    "response": row[3],
+                                    "content": f"Q: {row[2]}\nA: {row[3]}",
+                                })
+                        except (ValueError, TypeError):
+                            pass
+            except Exception as e:
+                import sys
+                print(f"Chroma query error: {e}", file=sys.stderr)
+
         for r in self._sqlite_keyword_search(prompt, limit=limit):
-            if not any(r["prompt"][:50] in x.get("prompt", "") for x in results):
+            if not any(r["id"] == x.get("id") for x in results):
                 results.append({
-                    "content": f"Q: {r['prompt']}\nA: {r['response']}",
+                    "id": r["id"],
+                    "kind": r["kind"],
+                    "timestamp": r["timestamp"],
                     "prompt": r["prompt"],
+                    "response": r["response"],
+                    "content": f"Q: {r['prompt']}\nA: {r['response']}",
                 })
         if not results:
             return ""
-        return "\n---\n".join(r["content"][:600] for r in results[:limit])
+        formatted = []
+        for r in results[:limit]:
+            date_str = "unknown"
+            if r["timestamp"]:
+                date_str = r["timestamp"][:10]
+            header = f"[#{r['id']} · {r['kind']} · {date_str}]"
+            content = r["content"][:600]
+            formatted.append(f"{header}\n{content}")
+        return "\n---\n".join(formatted)
 
     def _sqlite_keyword_search(self, prompt: str, limit: int = 5) -> list[dict]:
+        if getattr(self, "fts5_enabled", False):
+            # FTS5 search path
+            keywords = [w for w in self._extract_keywords(prompt).split(",") if w]
+            if not keywords:
+                return []
+            match_query = " OR ".join(keywords)
+            with sqlite_connect(self.db_path) as conn:
+                try:
+                    rows = conn.execute(
+                        "SELECT id, prompt, response, timestamp, kind, importance, -bm25(memories_fts) AS score_bm25 "
+                        "FROM memories JOIN memories_fts ON memories.id = memories_fts.rowid "
+                        "WHERE memories.valid_until IS NULL AND memories_fts MATCH ? "
+                        "ORDER BY score_bm25 DESC LIMIT 100",
+                        (match_query,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+            if rows:
+                with sqlite_connect(self.db_path) as conn:
+                    recent_rows = conn.execute(
+                        "SELECT id FROM memories WHERE valid_until IS NULL ORDER BY id DESC LIMIT ?",
+                        (self.sliding_window,),
+                    ).fetchall()
+                recent_ids = {r[0] for r in recent_rows}
+                now = datetime.now(timezone.utc)
+                scored = []
+                for rid, rp, rr, ts, rknd, imp, bm25_val in rows:
+                    base_imp = imp or 1
+                    score = decayed_score(base_imp, ts, self.half_life_days, now) \
+                        if self.decay_enabled else float(base_imp)
+                    if rid in recent_ids:
+                        score *= self.recency_boost
+                    score *= (1.0 + max(0.0, bm25_val))
+                    scored.append((score, {
+                        "id": rid,
+                        "prompt": rp,
+                        "response": rr,
+                        "timestamp": ts,
+                        "kind": rknd or "memory"
+                    }))
+                scored.sort(reverse=True, key=lambda x: x[0])
+                return [item for _, item in scored[:limit]]
+
+        # Legacy keyword search fallback
         keywords = set(self._extract_keywords(prompt).split(","))
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT id, prompt, response, keywords, importance, timestamp "
+                "SELECT id, prompt, response, keywords, importance, timestamp, kind "
                 "FROM memories WHERE valid_until IS NULL "
                 "ORDER BY id DESC LIMIT 400"
             ).fetchall()
 
-        # The last N rows are inside the sliding window
         recent_ids = {row[0] for row in rows[: self.sliding_window]}
         now = datetime.now(timezone.utc)
 
         scored = []
-        for rid, rp, rr, rk, imp, ts in rows:
+        for rid, rp, rr, rk, imp, ts, rknd in rows:
             if not rk:
                 continue
             overlap = len(keywords & set(rk.split(",")))
@@ -273,13 +396,19 @@ class Memory:
                 if self.decay_enabled else float(base_imp)
             if rid in recent_ids:
                 score *= self.recency_boost
-            score *= overlap  # multiplier for keyword overlap
-            scored.append((score, rp, rr))
+            score *= overlap
+            scored.append((score, {
+                "id": rid,
+                "prompt": rp,
+                "response": rr,
+                "timestamp": ts,
+                "kind": rknd or "memory"
+            }))
         scored.sort(reverse=True, key=lambda x: x[0])
-        return [{"prompt": p, "response": r} for _, p, r in scored[:limit]]
+        return [item for _, item in scored[:limit]]
 
     def recent(self, n: int = 10) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT timestamp, prompt, response FROM memories "
                 "WHERE valid_until IS NULL ORDER BY id DESC LIMIT ?", (n,)
@@ -287,7 +416,7 @@ class Memory:
         return [{"timestamp": r[0], "prompt": r[1], "response": r[2]} for r in rows]
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT timestamp, prompt, response FROM memories "
                 "WHERE (prompt LIKE ? OR response LIKE ?) AND valid_until IS NULL "
@@ -298,7 +427,7 @@ class Memory:
 
     def clear(self) -> int:
         self.flush()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
             conn.execute("DELETE FROM memories")
             conn.commit()
@@ -309,13 +438,14 @@ class Memory:
         if not self._session:
             return
         self.flush()
-        prompts = [e["prompt"] for e in self._session]
-        with sqlite3.connect(self.db_path) as conn:
-            for p in prompts:
-                conn.execute(
-                    "UPDATE memories SET session_id=? WHERE prompt=? AND session_id IS NULL",
-                    (session_id, p),
-                )
+        with sqlite_connect(self.db_path) as conn:
+            for e in self._session:
+                row_id = e.get("id")
+                if row_id is not None:
+                    conn.execute(
+                        "UPDATE memories SET session_id=? WHERE id=?",
+                        (session_id, row_id),
+                    )
             conn.commit()
 
     # ------------------------- decision provenance -------------------------
@@ -343,7 +473,7 @@ class Memory:
         now = datetime.now(timezone.utc).isoformat()
         alts_json = _json.dumps(alternatives or [], ensure_ascii=False) if alternatives else None
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
                 "content_hash, valid_from, kind, reasoning, alternatives_json, chose_because) "
@@ -368,20 +498,32 @@ class Memory:
                     "INSERT INTO memory_evidence (memory_id, source, claim) VALUES (?,?,?)",
                     (new_id, ev.get("source"), ev.get("claim")),
                 )
+            superseded_ok = False
             if supersedes is not None:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE memories SET valid_until=?, invalidated_reason=?, superseded_by=? "
                     "WHERE id=? AND valid_until IS NULL",
                     (now, f"superseded by #{new_id}", new_id, supersedes),
                 )
+                superseded_ok = cur.rowcount > 0
             conn.commit()
+
+        if superseded_ok and self._chroma:
+            try:
+                self._chroma.delete(ids=[str(supersedes)])
+            except Exception as e:
+                import sys
+                print(f"Chroma delete error for id {supersedes}: {e}", file=sys.stderr)
+                self._failed_writes += 1
+
+        self._export_decisions_to_markdown()
         return new_id
 
     def get_full(self, mem_id: int) -> dict | None:
         """Return a full memory row including evidence + supersedes chain pointers."""
         import json as _json
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT id, timestamp, prompt, response, keywords, importance, "
                 "valid_from, valid_until, invalidated_reason, kind, reasoning, "
@@ -420,7 +562,7 @@ class Memory:
         If str: keyword-overlap group across decisions.
         """
         rows: list[dict] = []
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             if isinstance(topic_or_id, int):
                 seen: set[int] = set()
                 current: int | None = topic_or_id
@@ -479,14 +621,94 @@ class Memory:
         """Invalidate a record (does not delete; sets valid_until to now)."""
         self.flush()
         now = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cur = conn.execute(
                 "UPDATE memories SET valid_until=?, invalidated_reason=? "
                 "WHERE id=? AND valid_until IS NULL",
                 (now, reason or None, mem_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            ok = cur.rowcount > 0
+        if ok:
+            if self._chroma:
+                try:
+                    self._chroma.delete(ids=[str(mem_id)])
+                except Exception as e:
+                    import sys
+                    print(f"Chroma delete error for id {mem_id}: {e}", file=sys.stderr)
+                    self._failed_writes += 1
+            self._export_decisions_to_markdown()
+        return ok
+
+    def _export_decisions_to_markdown(self) -> None:
+        cairn_dir = Path.cwd() / ".cairn"
+        if not cairn_dir.exists():
+            return
+        persistence_dir = cairn_dir / "persistence" / "memory"
+        persistence_dir.mkdir(parents=True, exist_ok=True)
+        decisions_file = persistence_dir / "decisions.md"
+        
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, timestamp, prompt, reasoning, alternatives_json, "
+                "superseded_by, chose_because, valid_until, importance "
+                "FROM memories WHERE kind='decision' ORDER BY id ASC"
+            ).fetchall()
+            
+        import json as _json
+        lines = [
+            "# Decisions Log",
+            "",
+            "This file is an auto-generated mirror of Cairn's decision database for Git versioning.",
+            "Do not edit this file manually.",
+            "",
+        ]
+        
+        for r in rows:
+            mem_id, ts, decision, reasoning, alts_json, superseded_by, chose_because, valid_until, importance = r
+            status = "ACTIVE"
+            if valid_until:
+                if superseded_by:
+                    status = f"SUPERSEDED BY #{superseded_by}"
+                else:
+                    status = "INVALIDATED"
+            
+            lines.append(f"## Decision #{mem_id}, {status}")
+            lines.append(f"- **Date:** {ts}")
+            lines.append(f"- **Importance:** {importance}")
+            lines.append(f"- **Decision:** {decision}")
+            if reasoning:
+                lines.append(f"- **Reasoning:** {reasoning}")
+            if chose_because:
+                lines.append(f"- **Chose Because:** {chose_because}")
+            if valid_until:
+                lines.append(f"- **Valid Until:** {valid_until}")
+            if superseded_by:
+                lines.append(f"- **Superseded By:** #{superseded_by}")
+            
+            if alts_json:
+                try:
+                    alts = _json.loads(alts_json)
+                    if alts:
+                        lines.append("- **Alternatives Considered:**")
+                        for alt in alts:
+                            opt = alt.get("option", "")
+                            rej = alt.get("rejected_because", "")
+                            lines.append(f"  - *{opt}* (rejected: {rej})")
+                except Exception:
+                    pass
+            
+            with sqlite_connect(self.db_path) as conn:
+                ev_rows = conn.execute(
+                    "SELECT source, claim FROM memory_evidence WHERE memory_id = ?", (mem_id,)
+                ).fetchall()
+            if ev_rows:
+                lines.append("- **Evidence:**")
+                for src, claim in ev_rows:
+                    lines.append(f"  - *{src}:* {claim}")
+            lines.append("")
+            
+        decisions_file.write_text("\n".join(lines), encoding="utf-8")
 
     # ------------------------- helpers -------------------------
 
@@ -500,6 +722,7 @@ class Memory:
             "how","why","when","where","which","who","can","just","also",
         }
         words = text.lower().split()
-        keywords = [w.strip(".,!?;:\"'()[]{}") for w in words
-                    if w not in stop and len(w) > 3]
+        cleaned_words = [w.strip(".,!?;:\"'()[]{}") for w in words]
+        keywords = [w for w in cleaned_words
+                    if w not in stop and len(w) >= 3]
         return ",".join(dict.fromkeys(keywords[:25]))

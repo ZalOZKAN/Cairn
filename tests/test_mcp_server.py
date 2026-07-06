@@ -198,7 +198,9 @@ def test_memory_save_tool_returns_no_extraction_when_helper_unavailable(srv):
     _stub_helper(srv, None)
     _call(srv, "memory_store", {"prompt": "p", "response": "r"})
     out = _call(srv, "memory_save", {})
-    assert "no extraction" in out
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data.get("fallback") is True
 
 
 def test_memory_save_tool_reports_counts_when_helper_works(srv):
@@ -290,3 +292,22 @@ def test_handler_exception_is_caught(srv):
     # memory_invalidate without id key → KeyError inside handler → caught
     text = _call(srv, "memory_invalidate", {})
     assert "Error" in text
+
+
+def test_record_decision_warning_on_invalid_supersedes(srv):
+    raw = _call(srv, "record_decision", {"decision": "New decision", "supersedes": 9999})
+    data = json.loads(raw)
+    assert data["id"] is not None
+    assert "warning" in data
+    assert "supersedes id 9999 not found" in data["warning"]
+
+
+def test_memory_thread_explicit_id_and_topic(srv):
+    a = json.loads(_call(srv, "record_decision", {"decision": "Use localStorage for JWT"}))["id"]
+    b = json.loads(_call(srv, "record_decision",
+                         {"decision": "Use httpOnly cookies for JWT", "supersedes": a}))["id"]
+    chain = json.loads(_call(srv, "memory_thread", {"id": a}))
+    assert [r["id"] for r in chain] == [a, b]
+
+    matches = json.loads(_call(srv, "memory_thread", {"topic": "localStorage"}))
+    assert any("localStorage" in r["decision"] for r in matches)

@@ -173,7 +173,7 @@ cairn workflow list
 cairn workflow show /plan
 ```
 
-A longer reference lives in `docs/CLI.md` (forthcoming).
+A longer reference lives in [docs/CLI.md](file:///c:/Projects/Cairn/docs/CLI.md).
 
 ---
 

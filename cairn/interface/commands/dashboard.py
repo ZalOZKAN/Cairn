@@ -10,13 +10,14 @@ Generated file lives at `.cairn/persistence/dashboard.html`.
 from __future__ import annotations
 
 import json
-import sqlite3
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import typer
+
+from cairn.memory.memory import sqlite_connect
 
 
 FILTERS = {"all", "active", "invalidated", "recent"}
@@ -29,7 +30,7 @@ def collect_dashboard_data(db_path: Path, filt: str = "all") -> dict[str, Any]:
     if not db_path.exists():
         return _empty_data(filt)
 
-    with sqlite3.connect(db_path) as conn:
+    with sqlite_connect(db_path) as conn:
         decisions = _load_decisions(conn, filt)
         activity = _load_activity(conn)
         active_count = conn.execute(

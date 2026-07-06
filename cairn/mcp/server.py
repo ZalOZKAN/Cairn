@@ -15,7 +15,7 @@ Claude Code config (`~/.claude/claude_desktop_config.json`):
     {
       "mcpServers": {
         "cairn": {
-          "command": "gs",
+          "command": "cairn",
           "args": ["mcp", "serve"]
         }
       }
@@ -154,11 +154,6 @@ class CairnMCPServer:
             cfg = self._autosave_cfg()
             if not force and not cfg.get("enabled", True):
                 return None
-            try:
-                from cairn.memory.extractor import MemoryExtractor
-                extractor = MemoryExtractor(self.project)
-            except Exception:
-                return None
             recent = self.project.memory.recent(n=30)
             if not recent:
                 return None
@@ -166,12 +161,39 @@ class CairnMCPServer:
                 {"prompt": r["prompt"], "response": r["response"], "timestamp": r["timestamp"]}
                 for r in recent
             ]
+            extraction = None
+            helper_available = False
+            
+            if self.project.config.get("memory_helper_model"):
+                try:
+                    from cairn.memory.extractor import MemoryExtractor
+                    extractor = MemoryExtractor(self.project)
+                    extraction = extractor.extract_from_session(entries)
+                    if not (cfg.get("skip_if_helper_unavailable", True) and extraction.get("_error")):
+                        helper_available = True
+                except Exception as e:
+                    import sys
+                    print(f"Auto-save extraction error: {e}", file=sys.stderr)
+            
+            if not helper_available:
+                in_progress = [
+                    {"task": e["prompt"][:80], "status": "recorded", "next_step": "review"}
+                    for e in entries[:5]
+                ]
+                completed = [e["prompt"][:80] for e in entries[5:15]]
+                extraction = {
+                    "next_session_start": "Review and continue from the recent topics listed below.",
+                    "tasks_in_progress": in_progress,
+                    "tasks_completed": completed,
+                    "_fallback": True
+                }
+            
             try:
-                extraction = extractor.extract_from_session(entries)
-            except Exception:
-                return None
-            if cfg.get("skip_if_helper_unavailable", True) and extraction.get("_error"):
-                return None
+                self.project.session.end_session(extraction, summary=f"Auto-saved (reason: {reason})")
+            except Exception as e:
+                import sys
+                print(f"Auto-save persist error: {e}", file=sys.stderr)
+                
             self._last_save_at = time.monotonic()
             return extraction
         finally:
@@ -275,8 +297,7 @@ class CairnMCPServer:
                   {"name": _str("e.g. adversary")},
                   required=["name"]),
             _tool("record_decision",
-                  "Record a first-class decision. If this is a decision, please also pass "
-                  "reasoning and at least one alternative so future-you can audit the choice.",
+                  "Record a first-class decision. Call this tool whenever an architectural or design decision is made in the conversation. Please also pass reasoning and at least one alternative so future-you can audit the choice.",
                   {"decision": _str("The decision in one sentence"),
                    "reasoning": _str("Why we chose this", default=""),
                    "alternatives": {"type": "array",
@@ -298,11 +319,12 @@ class CairnMCPServer:
                   {"id": _int("Memory row id")},
                   required=["id"]),
             _tool("memory_thread",
-                  "Chronological versions of a decision topic. Pass an id to walk the "
-                  "supersedes chain, or a string for keyword-overlap grouping.",
-                  {"topic_or_id": _str("Topic keyword OR a numeric id as string"),
+                  "Chronological versions of a decision topic. Provide 'id' to walk the supersedes chain, or 'topic' for keyword-overlap grouping.",
+                  {"id": _int("Decision ID to walk the chain"),
+                   "topic": _str("Keyword for decision group"),
+                   "topic_or_id": _str("Deprecated: use id or topic instead"),
                    "limit": _int("Max entries", default=20)},
-                  required=["topic_or_id"]),
+                  required=[]),
             _tool("decision_audit_score",
                   "Completeness score 0/4..4/4 for a decision: reasoning, alternatives, evidence, supersedes.",
                   {"id": _int("Decision row id")},
@@ -338,13 +360,16 @@ def _h_memory_save(srv: CairnMCPServer, args: dict) -> str:
     extraction = srv._maybe_autosave(reason="explicit", force=True)
     if extraction is None:
         return "no extraction (helper unavailable or no recent entries)"
-    return json.dumps({
+    res = {
         "ok": True,
         "facts": len(extraction.get("facts", [])),
         "decisions": len(extraction.get("decisions", [])),
         "tasks_completed": len(extraction.get("tasks_completed", [])),
         "tasks_in_progress": len(extraction.get("tasks_in_progress", [])),
-    }, ensure_ascii=False)
+    }
+    if extraction.get("_fallback"):
+        res["fallback"] = True
+    return json.dumps(res, ensure_ascii=False)
 
 
 def _h_recent(srv: CairnMCPServer, args: dict) -> str:
@@ -375,6 +400,7 @@ def _h_status(srv: CairnMCPServer, _args: dict) -> str:
         f"task: {state.get('current_task') or 'none'}",
         f"status: {state.get('task_status', 'idle')}",
         f"session #: {state.get('session_count', 0)}",
+        f"failed writes: {getattr(srv.project.memory, '_failed_writes', 0)}",
     ]
     if handoff:
         out.append("\nlast handoff:\n" + handoff[:500])
@@ -406,16 +432,30 @@ def _h_get_agent(srv: CairnMCPServer, args: dict) -> str:
 
 
 def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
+    supersedes = int(args["supersedes"]) if args.get("supersedes") is not None else None
+    warning = None
+    if supersedes is not None:
+        from cairn.memory.memory import sqlite_connect
+        with sqlite_connect(srv.project.memory.db_path) as conn:
+            row = conn.execute(
+                "SELECT id FROM memories WHERE id=? AND valid_until IS NULL", (supersedes,)
+            ).fetchone()
+        if not row:
+            warning = f"supersedes id {supersedes} not found or already invalidated"
+
     new_id = srv.project.memory.record_decision(
         decision=args["decision"],
         reasoning=args.get("reasoning") or None,
         alternatives=args.get("alternatives") or None,
         evidence=args.get("evidence") or None,
-        supersedes=int(args["supersedes"]) if args.get("supersedes") is not None else None,
+        supersedes=supersedes,
         chose_because=args.get("chose_because") or None,
         importance=int(args.get("importance", 2)),
     )
-    return json.dumps({"id": new_id, "kind": "decision"}, ensure_ascii=False)
+    res = {"id": new_id, "kind": "decision"}
+    if warning:
+        res["warning"] = warning
+    return json.dumps(res, ensure_ascii=False)
 
 
 def _h_memory_get(srv: CairnMCPServer, args: dict) -> str:
@@ -424,12 +464,20 @@ def _h_memory_get(srv: CairnMCPServer, args: dict) -> str:
 
 
 def _h_memory_thread(srv: CairnMCPServer, args: dict) -> str:
-    raw = args["topic_or_id"]
     target: int | str
-    try:
-        target = int(raw)
-    except (ValueError, TypeError):
-        target = str(raw)
+    if args.get("id") is not None:
+        target = int(args["id"])
+    elif args.get("topic") is not None:
+        target = str(args["topic"])
+    elif args.get("topic_or_id") is not None:
+        raw = args["topic_or_id"]
+        try:
+            target = int(raw)
+        except (ValueError, TypeError):
+            target = str(raw)
+    else:
+        return json.dumps({"error": "Missing parameter: 'id' or 'topic' is required"}, ensure_ascii=False)
+        
     rows = srv.project.memory.thread(target, limit=int(args.get("limit", 20)))
     return json.dumps(rows, ensure_ascii=False, indent=2)
 

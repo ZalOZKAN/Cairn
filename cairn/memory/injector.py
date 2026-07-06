@@ -97,6 +97,7 @@ class ContextInjector:
 
         sections.append("---")
         sections.append("*Context loaded. Ready to continue.*")
+        sections.append("\n**REMINDER FOR THE AGENT:** Remember to call `record_decision` whenever an architectural or design decision is made during this session so that it is persistently stored and versioned.")
 
         return "\n".join(sections)
 
@@ -114,6 +115,7 @@ class ContextInjector:
             lines.append(f"@{persistence / 'session-handoff.md'}")
 
         lines.append("\nContinue from where we left off based on the above context.")
+        lines.append("Remember to call `record_decision` whenever an architectural or design decision is made during this session so that it is persistently stored and versioned.")
         return "\n".join(lines)
 
     def _build_json_format(self, include_memory: list[str] | None) -> str:

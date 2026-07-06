@@ -243,3 +243,12 @@ def memory_clear(
     agent = Agent()
     count = agent.memory.clear()
     console.print(f"[green]✓ {count} entries deleted.[/green]")
+
+
+@memory_app.command("export")
+def memory_export():
+    """Export all decisions to .cairn/persistence/memory/decisions.md."""
+    from cairn.core import Agent
+    agent = Agent()
+    agent.memory._export_decisions_to_markdown()
+    console.print("[green]✓ Decisions exported to .cairn/persistence/memory/decisions.md[/green]")

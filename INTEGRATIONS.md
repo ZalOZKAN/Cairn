@@ -23,8 +23,8 @@ Below: what to paste *where*, plus any host-specific gotchas.
 - **Restart needed:** yes, quit fully, reopen.
 - **Verify:** in a new conversation, ask "what MCP tools do you have?", the
   response should list `memory_recall`, `memory_store`, etc.
-- **Verified versions:** _TBD, fill in during GIF recording (host version + OS)._
-- **Known quirks:** _none yet._
+- **Verified versions:** not yet verified
+- **Known quirks:** none yet.
 
 ---
 
@@ -34,8 +34,8 @@ Below: what to paste *where*, plus any host-specific gotchas.
 - **Restart needed:** yes.
 - **Verify:** open the MCP panel in Cursor settings; `cairn` server should
   show "connected."
-- **Verified versions:** _TBD._
-- **Known quirks:** _TBD._
+- **Verified versions:** not yet verified
+- **Known quirks:** not yet verified
 
 ---
 
@@ -45,8 +45,8 @@ Below: what to paste *where*, plus any host-specific gotchas.
   Continue adopted MCP in late 2025; check current docs if the schema moved).
 - **Restart needed:** depends on host editor (VS Code / JetBrains).
 - **Verify:** Continue's chat panel lists Cairn tools under "available tools."
-- **Verified versions:** _TBD._
-- **Known quirks:** _TBD._
+- **Verified versions:** not yet verified
+- **Known quirks:** not yet verified
 
 ---
 

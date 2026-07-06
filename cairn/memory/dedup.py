@@ -11,9 +11,10 @@ Both the semantic beta path and the basic hash check live here.
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from cairn.memory.memory import sqlite_connect
 
 if TYPE_CHECKING:
     from cairn.memory.memory import Memory
@@ -23,9 +24,9 @@ DEFAULT_THRESHOLD = 0.92
 
 
 def _bump_existing(memory: "Memory", row_id: int) -> None:
-    with sqlite3.connect(memory.db_path) as conn:
+    with sqlite_connect(memory.db_path) as conn:
         conn.execute(
-            "UPDATE memories SET importance = importance + 1, timestamp = ? "
+            "UPDATE memories SET importance = MIN(importance + 1, 5), timestamp = ? "
             "WHERE id = ?",
             (datetime.now(timezone.utc).isoformat(), row_id),
         )
@@ -47,15 +48,17 @@ def maybe_merge(memory: "Memory", entry: dict) -> bool:
     # 1) Hash match, exact same content
     h = entry.get("content_hash")
     if h:
-        with sqlite3.connect(memory.db_path) as conn:
+        with sqlite_connect(memory.db_path) as conn:
             row = conn.execute(
-                "SELECT id FROM memories WHERE content_hash = ? AND valid_until IS NULL "
+                "SELECT id, kind FROM memories WHERE content_hash = ? AND valid_until IS NULL "
                 "ORDER BY id DESC LIMIT 1",
                 (h,),
             ).fetchone()
         if row:
-            _bump_existing(memory, row[0])
-            return True
+            if row[1] != 'decision':
+                _bump_existing(memory, row[0])
+                return True
+            return False
 
     # 2) Semantic dedup, if Chroma is available, check cosine similarity
     chroma = getattr(memory, "_chroma", None)
@@ -73,8 +76,14 @@ def maybe_merge(memory: "Memory", entry: dict) -> bool:
                 similarity = 1.0 - float(distances[0]) / 2.0
                 if similarity >= threshold:
                     try:
-                        _bump_existing(memory, int(ids[0]))
-                        return True
+                        row_id = int(ids[0])
+                        with sqlite_connect(memory.db_path) as conn:
+                            row = conn.execute(
+                                "SELECT kind FROM memories WHERE id = ?", (row_id,)
+                            ).fetchone()
+                        if row and row[0] != 'decision':
+                            _bump_existing(memory, row_id)
+                            return True
                     except (TypeError, ValueError):
                         return False
         except Exception:

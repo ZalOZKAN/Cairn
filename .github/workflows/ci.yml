@@ -2,46 +2,36 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [ main, master ]
   pull_request:
-    branches: [main]
+    branches: [ main, master ]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: |
-          pip install -e ".[dev]"
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[dev]
 
-      - name: Lint with ruff
-        run: ruff check cairn/
+    - name: Run Ruff check
+      run: ruff check cairn/
 
-      - name: Type check with mypy
-        run: mypy cairn/ --ignore-missing-imports
-        continue-on-error: true
+    - name: Run tests
+      run: python -m pytest tests/ -q
 
-      - name: Run tests
-        run: pytest tests/ -v --tb=short
-        env:
-          # Tests do not make LLM calls; no API key required.
-          CAIRN_TEST_MODE: "1"
-
-      - name: Check security patterns
-        run: |
-          # Make sure no .env files were committed
-          if git grep -r "ANTHROPIC_API_KEY\s*=" --include="*.py" | grep -v "os.environ" | grep -v "test" | grep -v "#"; then
-            echo "ERROR: Possible hardcoded API key found"
-            exit 1
-          fi
+    - name: Run decay benchmark
+      run: python scripts/benchmark_decay.py

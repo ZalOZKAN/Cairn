@@ -62,8 +62,8 @@ class ConflictDetector:
             return []
 
     def _candidates(self, memory: "Memory") -> list[tuple[int, str, str]]:
-        import sqlite3
-        with sqlite3.connect(memory.db_path) as conn:
+        from cairn.memory.memory import sqlite_connect
+        with sqlite_connect(memory.db_path) as conn:
             rows = conn.execute(
                 "SELECT id, prompt, response FROM memories "
                 "WHERE valid_until IS NULL AND importance >= ? "
