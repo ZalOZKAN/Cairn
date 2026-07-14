@@ -1,0 +1,28 @@
+# Cairn, Local-first profile
+# Fully offline. Helper LLM runs through a local Ollama server, nothing
+# leaves the machine. Same as `cairn init --profile local`.
+
+memory:
+  enabled: true
+  backend: sqlite
+  async_store: true
+  sliding_window: 10
+  recency_boost: 1.5
+  decay:
+    enabled: true
+    half_life_days: 30
+  dedup:
+    enabled: true
+    threshold: 0.92
+  conflict:
+    enabled: false        # opt-in (LLM-based, false-positive risk)
+    model: ollama/qwen2.5:3b
+
+memory_helper_model: ollama/qwen2.5:3b
+
+# Setup:
+#   pip install cairn[helper]
+#   ollama pull qwen2.5:3b
+#   ollama serve   # if not already running
+# Or skip the helper entirely:
+#   memory_helper_model: null

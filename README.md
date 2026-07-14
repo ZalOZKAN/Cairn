@@ -148,7 +148,8 @@ If you want any of those, your IDE already has it. Cairn feeds it memory.
 
 ```bash
 # Initialize
-cairn init                              # create .cairn/ in current dir
+cairn init                              # create .cairn/ in current dir (cloud helper model)
+cairn init --profile local              # same, but the helper model runs on a local Ollama server
 
 # MCP server (what your IDE calls)
 cairn mcp serve                         # stdio JSON-RPC 2.0, Claude Code-compatible

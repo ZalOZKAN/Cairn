@@ -9,6 +9,7 @@ Initialize Cairn in the current project directory.
 - **What it does:** Creates the `.cairn/` configuration and directory structures (skills, agents, workflows, persistence) and generates a default `config.yaml` and `SYSTEM.md`.
 - **Options:**
   - `--name, -n <text>`: Custom project name (defaults to directory name).
+  - `--profile, -p [cloud|local]`: Helper model profile (default: `cloud`). `cloud` configures the Groq API; `local` configures a local Ollama server (`qwen2.5:3b`) so the helper model never leaves the machine. See `profiles/local_first.yaml` for the underlying template.
 
 ### `cairn version`
 Print the current version of Cairn.
