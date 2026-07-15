@@ -139,6 +139,7 @@ class Memory:
             ("alternatives_json", "TEXT"),
             ("superseded_by", "INTEGER"),
             ("chose_because", "TEXT"),
+            ("scope_path", "TEXT"),
         ]
         for col, typ in adds:
             if col not in existing:
@@ -153,6 +154,7 @@ class Memory:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_mem ON memory_evidence(memory_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kind ON memories(kind)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_superseded_by ON memories(superseded_by)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scope_path ON memories(scope_path)")
         conn.commit()
 
     def _init_chroma(self, base_dir: Path):
@@ -217,7 +219,27 @@ class Memory:
         h.update(response.strip()[:1000].encode("utf-8", errors="ignore"))
         return h.hexdigest()
 
-    def store(self, prompt: str, response: str, importance: int = 1):
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        return path.replace("\\", "/").strip("/")
+
+    @classmethod
+    def _path_filter_sql(cls, path: str | None, column: str = "scope_path") -> tuple[str, tuple]:
+        """SQL fragment + params scoping a query to a workspace-relative path.
+
+        A row with scope_path NULL is repo-wide and always matches. A row
+        scoped to an ancestor directory of `path` (or to `path` itself)
+        matches; a sibling or descendant-of-a-sibling does not.
+        """
+        if not path:
+            return "", ()
+        norm = cls._normalize_path(path)
+        return (
+            f" AND ({column} IS NULL OR {column} = ? OR ? LIKE ({column} || '/%'))",
+            (norm, norm),
+        )
+
+    def store(self, prompt: str, response: str, importance: int = 1, scope_path: str | None = None):
         if not self.enabled:
             return
         entry = {
@@ -227,6 +249,7 @@ class Memory:
             "keywords": self._extract_keywords(prompt + " " + response[:1000]),
             "importance": importance,
             "content_hash": self._content_hash(prompt, response),
+            "scope_path": self._normalize_path(scope_path) if scope_path else None,
         }
         self._session.append(entry)
         if self.async_store_enabled:
@@ -246,7 +269,7 @@ class Memory:
         with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
-                "content_hash, valid_from) VALUES (?,?,?,?,?,?,?)",
+                "content_hash, valid_from, scope_path) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     entry["timestamp"],
                     entry["prompt"],
@@ -255,6 +278,7 @@ class Memory:
                     entry["importance"],
                     entry["content_hash"],
                     entry["timestamp"],
+                    entry.get("scope_path"),
                 ),
             )
             row_id = cursor.lastrowid
@@ -274,11 +298,12 @@ class Memory:
 
     # ------------------------- recall -------------------------
 
-    def recall(self, prompt: str, limit: int | None = None) -> str:
+    def recall(self, prompt: str, limit: int | None = None, path: str | None = None) -> str:
         if not self.enabled:
             return ""
         limit = limit or self.max_results
         results: list[dict] = []
+        path_sql, path_params = self._path_filter_sql(path)
         if self._chroma:
             try:
                 res = self._chroma.query(query_texts=[prompt], n_results=min(limit, 3))
@@ -289,7 +314,8 @@ class Memory:
                             with sqlite_connect(self.db_path) as conn:
                                 row = conn.execute(
                                     "SELECT kind, timestamp, prompt, response FROM memories "
-                                    "WHERE id = ? AND valid_until IS NULL", (db_id,)
+                                    "WHERE id = ? AND valid_until IS NULL" + path_sql,
+                                    (db_id, *path_params),
                                 ).fetchone()
                             if row:
                                 results.append({
@@ -306,7 +332,7 @@ class Memory:
                 import sys
                 print(f"Chroma query error: {e}", file=sys.stderr)
 
-        for r in self._sqlite_keyword_search(prompt, limit=limit):
+        for r in self._sqlite_keyword_search(prompt, limit=limit, path=path):
             if not any(r["id"] == x.get("id") for x in results):
                 results.append({
                     "id": r["id"],
@@ -328,7 +354,8 @@ class Memory:
             formatted.append(f"{header}\n{content}")
         return "\n---\n".join(formatted)
 
-    def _sqlite_keyword_search(self, prompt: str, limit: int = 5) -> list[dict]:
+    def _sqlite_keyword_search(self, prompt: str, limit: int = 5, path: str | None = None) -> list[dict]:
+        path_sql, path_params = self._path_filter_sql(path, column="memories.scope_path")
         if getattr(self, "fts5_enabled", False):
             # FTS5 search path
             keywords = [w for w in self._extract_keywords(prompt).split(",") if w]
@@ -340,9 +367,9 @@ class Memory:
                     rows = conn.execute(
                         "SELECT id, prompt, response, timestamp, kind, importance, -bm25(memories_fts) AS score_bm25 "
                         "FROM memories JOIN memories_fts ON memories.id = memories_fts.rowid "
-                        "WHERE memories.valid_until IS NULL AND memories_fts MATCH ? "
+                        "WHERE memories.valid_until IS NULL AND memories_fts MATCH ?" + path_sql + " "
                         "ORDER BY score_bm25 DESC LIMIT 100",
-                        (match_query,),
+                        (match_query, *path_params),
                     ).fetchall()
                 except sqlite3.OperationalError:
                     rows = []
@@ -373,12 +400,14 @@ class Memory:
                 return [item for _, item in scored[:limit]]
 
         # Legacy keyword search fallback
+        legacy_path_sql, legacy_path_params = self._path_filter_sql(path)
         keywords = set(self._extract_keywords(prompt).split(","))
         with sqlite_connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT id, prompt, response, keywords, importance, timestamp, kind "
-                "FROM memories WHERE valid_until IS NULL "
-                "ORDER BY id DESC LIMIT 400"
+                "FROM memories WHERE valid_until IS NULL" + legacy_path_sql + " "
+                "ORDER BY id DESC LIMIT 400",
+                legacy_path_params,
             ).fetchall()
 
         recent_ids = {row[0] for row in rows[: self.sliding_window]}
@@ -415,13 +444,14 @@ class Memory:
             ).fetchall()
         return [{"timestamp": r[0], "prompt": r[1], "response": r[2]} for r in rows]
 
-    def search(self, query: str, limit: int = 10) -> list[dict]:
+    def search(self, query: str, limit: int = 10, path: str | None = None) -> list[dict]:
+        path_sql, path_params = self._path_filter_sql(path)
         with sqlite_connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT timestamp, prompt, response FROM memories "
-                "WHERE (prompt LIKE ? OR response LIKE ?) AND valid_until IS NULL "
+                "WHERE (prompt LIKE ? OR response LIKE ?) AND valid_until IS NULL" + path_sql + " "
                 "ORDER BY id DESC LIMIT ?",
-                (f"%{query}%", f"%{query}%", limit),
+                (f"%{query}%", f"%{query}%", *path_params, limit),
             ).fetchall()
         return [{"timestamp": r[0], "prompt": r[1], "response": r[2]} for r in rows]
 
@@ -459,6 +489,7 @@ class Memory:
         supersedes: int | None = None,
         chose_because: str | None = None,
         importance: int = 2,
+        scope_path: str | None = None,
     ) -> int:
         """Insert a decision row synchronously and return its id.
 
@@ -466,18 +497,21 @@ class Memory:
         evidence:     [{"source": str, "claim": str}, ...]
         supersedes:   prior decision id; if set, that row is invalidated and
                       its superseded_by is filled.
+        scope_path:   workspace-relative path this decision applies to (e.g.
+                      "apps/api"); None = repo-wide.
         """
         import json as _json
 
         self.flush()
         now = datetime.now(timezone.utc).isoformat()
         alts_json = _json.dumps(alternatives or [], ensure_ascii=False) if alternatives else None
+        norm_scope = self._normalize_path(scope_path) if scope_path else None
 
         with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
-                "content_hash, valid_from, kind, reasoning, alternatives_json, chose_because) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "content_hash, valid_from, kind, reasoning, alternatives_json, chose_because, scope_path) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     now,
                     decision,
@@ -490,6 +524,7 @@ class Memory:
                     reasoning,
                     alts_json,
                     chose_because,
+                    norm_scope,
                 ),
             )
             new_id = cursor.lastrowid
@@ -527,7 +562,7 @@ class Memory:
             row = conn.execute(
                 "SELECT id, timestamp, prompt, response, keywords, importance, "
                 "valid_from, valid_until, invalidated_reason, kind, reasoning, "
-                "alternatives_json, superseded_by, chose_because "
+                "alternatives_json, superseded_by, chose_because, scope_path "
                 "FROM memories WHERE id=?",
                 (mem_id,),
             ).fetchone()
@@ -550,6 +585,7 @@ class Memory:
             "reasoning": row[10],
             "alternatives": _json.loads(row[11]) if row[11] else [],
             "superseded_by": row[12], "chose_because": row[13],
+            "scope_path": row[14],
             "supersedes": supersedes_id[0] if supersedes_id else None,
             "evidence": evidence,
         }

@@ -250,13 +250,18 @@ class CairnMCPServer:
             _tool("memory_recall",
                   "Decay-aware recall of past memory entries relevant to a query.",
                   {"query": _str("Search query"),
-                   "limit": _int("Max entries to return", default=5)},
+                   "limit": _int("Max entries to return", default=5),
+                   "path": _str("Optional workspace-relative path (e.g. 'apps/api') to scope "
+                                 "results to that path and its ancestors; repo-wide entries "
+                                 "always match. Omit for unscoped, repo-wide recall.")},
                   required=["query"]),
             _tool("memory_store",
                   "Add a new memory entry. Importance 1-3 controls ranking weight.",
                   {"prompt": _str("User-side prompt / topic"),
                    "response": _str("Assistant response / fact to remember"),
-                   "importance": _int("1=normal, 2=decision, 3=critical", default=1)},
+                   "importance": _int("1=normal, 2=decision, 3=critical", default=1),
+                   "scope_path": _str("Optional workspace-relative path this entry applies to "
+                                       "(e.g. 'apps/api'). Omit for repo-wide.")},
                   required=["prompt", "response"]),
             _tool("memory_recent",
                   "Return the N most recent valid memory entries.",
@@ -264,7 +269,9 @@ class CairnMCPServer:
             _tool("memory_search",
                   "Substring search across memory.",
                   {"query": _str("Substring"),
-                   "limit": _int("Max results", default=10)},
+                   "limit": _int("Max results", default=10),
+                   "path": _str("Optional workspace-relative path to scope results to "
+                                 "(same semantics as memory_recall's path param).")},
                   required=["query"]),
             _tool("memory_invalidate",
                   "Retire a memory entry by id without deleting it.",
@@ -312,7 +319,9 @@ class CairnMCPServer:
                                     "claim": {"type": "string"}}}},
                    "supersedes": _int("Prior decision id this replaces"),
                    "chose_because": _str("Short tag for the deciding factor", default=""),
-                   "importance": _int("1=normal, 2=decision, 3=critical", default=2)},
+                   "importance": _int("1=normal, 2=decision, 3=critical", default=2),
+                   "scope_path": _str("Optional workspace-relative path this decision applies "
+                                       "to (e.g. 'apps/api'). Omit for repo-wide.")},
                   required=["decision"]),
             _tool("memory_get",
                   "Full record for a memory id: reasoning, alternatives, evidence, supersedes chain.",
@@ -340,7 +349,9 @@ class CairnMCPServer:
 # ---- tool handlers --------------------------------------------------
 
 def _h_recall(srv: CairnMCPServer, args: dict) -> str:
-    out = srv.project.memory.recall(args.get("query", ""), limit=int(args.get("limit", 5)))
+    out = srv.project.memory.recall(
+        args.get("query", ""), limit=int(args.get("limit", 5)), path=args.get("path") or None
+    )
     return out or "(no relevant memory)"
 
 
@@ -349,6 +360,7 @@ def _h_store(srv: CairnMCPServer, args: dict) -> str:
         args.get("prompt", ""),
         args.get("response", ""),
         importance=int(args.get("importance", 1)),
+        scope_path=args.get("scope_path") or None,
     )
     srv.project.memory.flush()
     srv._on_store()
@@ -378,7 +390,9 @@ def _h_recent(srv: CairnMCPServer, args: dict) -> str:
 
 
 def _h_search(srv: CairnMCPServer, args: dict) -> str:
-    rows = srv.project.memory.search(args.get("query", ""), limit=int(args.get("limit", 10)))
+    rows = srv.project.memory.search(
+        args.get("query", ""), limit=int(args.get("limit", 10)), path=args.get("path") or None
+    )
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
 
@@ -451,6 +465,7 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
         supersedes=supersedes,
         chose_because=args.get("chose_because") or None,
         importance=int(args.get("importance", 2)),
+        scope_path=args.get("scope_path") or None,
     )
     res = {"id": new_id, "kind": "decision"}
     if warning:

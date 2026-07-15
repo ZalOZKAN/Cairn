@@ -185,3 +185,65 @@ def test_3_letter_keyword_and_fts5():
         assert "jwt" in kws.split(",")
         out = mem.recall("jwt cookies")
         assert "recommended for security" in out
+
+
+# --- Path scoping ----------------------------------------------------------
+
+def test_migration_adds_scope_path_column():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir)
+        import sqlite3
+        with sqlite3.connect(mem.db_path) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+        assert "scope_path" in cols
+
+
+def test_normalize_path_strips_slashes_and_backslashes():
+    assert Memory._normalize_path("/apps/api/") == "apps/api"
+    assert Memory._normalize_path("apps\\api") == "apps/api"
+
+
+def test_recall_path_scoping_ancestor_and_sibling():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir, dedup=False)
+        mem.store("api auth scoping alpha", "api-only fact", scope_path="apps/api")
+        mem.store("web auth scoping alpha", "web-only fact", scope_path="apps/web")
+        mem.store("global auth scoping alpha", "repo-wide fact")
+
+        # Scoped to apps/api: sees its own entry + the global one, not apps/web.
+        out = mem.recall("auth scoping alpha", path="apps/api")
+        assert "api-only fact" in out
+        assert "repo-wide fact" in out
+        assert "web-only fact" not in out
+
+        # Ancestor scoping: a memory scoped to "apps" is visible from "apps/api/auth".
+        mem.store("ancestor scoping alpha", "ancestor fact", scope_path="apps")
+        out2 = mem.recall("ancestor scoping alpha", path="apps/api/auth")
+        assert "ancestor fact" in out2
+
+        # No path filter: everything is visible (backward compatible default).
+        out3 = mem.recall("auth scoping alpha")
+        assert "api-only fact" in out3 and "web-only fact" in out3
+
+
+def test_search_path_scoping():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir, dedup=False)
+        mem.store("search scope api topic", "api detail", scope_path="apps/api")
+        mem.store("search scope web topic", "web detail", scope_path="apps/web")
+
+        api_results = mem.search("search scope", path="apps/api")
+        assert any("api detail" in r["response"] for r in api_results)
+        assert not any("web detail" in r["response"] for r in api_results)
+
+
+def test_record_decision_scope_path_round_trips():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        mem = _mk_memory(tmpdir)
+        dec_id = mem.record_decision(
+            "use per-service auth middleware",
+            reasoning="apps/api needs its own token validation",
+            scope_path="apps/api",
+        )
+        full = mem.get_full(dec_id)
+        assert full["scope_path"] == "apps/api"

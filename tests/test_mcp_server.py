@@ -80,6 +80,23 @@ def test_memory_store_then_recall(srv):
     assert "httpOnly" in out
 
 
+def test_memory_recall_and_search_path_scoping(srv):
+    _call(srv, "memory_store",
+          {"prompt": "path scoping api topic", "response": "api-only detail",
+           "scope_path": "apps/api"})
+    _call(srv, "memory_store",
+          {"prompt": "path scoping web topic", "response": "web-only detail",
+           "scope_path": "apps/web"})
+
+    api_recall = _call(srv, "memory_recall", {"query": "path scoping", "path": "apps/api"})
+    assert "api-only detail" in api_recall
+    assert "web-only detail" not in api_recall
+
+    api_search = json.loads(_call(srv, "memory_search", {"query": "path scoping", "path": "apps/api"}))
+    assert any("api-only detail" in r["response"] for r in api_search)
+    assert not any("web-only detail" in r["response"] for r in api_search)
+
+
 def test_memory_recent_and_search(srv):
     _call(srv, "memory_store", {"prompt": "alpha topic one", "response": "answer one"})
     _call(srv, "memory_store", {"prompt": "alpha topic two", "response": "answer two"})

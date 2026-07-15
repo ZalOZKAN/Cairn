@@ -159,6 +159,7 @@ cairn mcp config --host claude-code     # print client config snippet
 cairn memory boot                       # session boot context
 cairn memory recent --n 10              # last 10 entries
 cairn memory search "jwt"               # substring search
+cairn memory search "jwt" --path apps/api  # scope results to a monorepo subdirectory
 cairn memory invalidate 42 --reason "schema migrated"
 cairn memory manifest                   # generate context-manifest.md (uses helper model)
 cairn memory status                     # current task + handoff

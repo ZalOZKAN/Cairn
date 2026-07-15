@@ -144,6 +144,10 @@ def memory_manifest(
 def memory_search(
     query: str = typer.Argument(..., help="Search term"),
     limit: int = typer.Option(5, "--limit", "-n"),
+    path: str = typer.Option(
+        "", "--path", "-p",
+        help="Scope to a workspace-relative path (e.g. 'apps/api'); repo-wide entries still match",
+    ),
 ):
     """Search memory (SQLite + files)."""
     from cairn.core import Agent
@@ -154,7 +158,7 @@ def memory_search(
 
     results_found = False
 
-    db_results = agent.memory.search(query, limit=limit)
+    db_results = agent.memory.search(query, limit=limit, path=path or None)
     if db_results:
         results_found = True
         table = Table(title=f"SQLite: '{query}'", box=box.ROUNDED)
