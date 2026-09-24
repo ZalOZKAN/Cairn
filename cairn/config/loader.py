@@ -29,6 +29,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # A path-scoped decision is flagged "needs review" once this many
         # commits have touched its path since it was recorded or confirmed.
         "stale": {"enabled": True, "commits": 10},
+        # Stop-hook reminder threshold: file edits since the last record_decision.
+        "nudge": {"edits": 8},
         "conflict": {
             "enabled": False,
             "model": "groq/llama-3.3-70b-versatile",

@@ -37,6 +37,9 @@ Below: what to paste *where*, plus any host-specific gotchas.
   `cairn memory for-path --hook`: before Claude edits a file, the decisions
   scoped to that file's directory are injected as `additionalContext`. It
   prints nothing when no decision applies, so it costs nothing on most edits.
+  A `Stop` hook (`cairn memory nudge`) reminds the agent to call
+  `record_decision` after many edits with no decision recorded (default 8),
+  at most once per threshold.
 - **Verified versions:** not yet verified
 - **Known quirks:** none yet.
 
@@ -152,7 +155,7 @@ of open-ended work. Do this once per host, on a real install of that host:
 2. Paste the printed block into the host's real config file (path is in
    that host's section above) and restart the host fully.
 3. Ask the agent "what MCP tools do you have?", confirm the response lists
-   Cairn tools (19 total; `cairn mcp config --host <host>` also prints the
+   Cairn tools (14 total; `cairn mcp config --host <host>` also prints the
    live count so you can cross-check).
 4. Ask it to remember something (a fake decision), restart the host again,
    ask it to recall, confirms the round-trip actually persists.

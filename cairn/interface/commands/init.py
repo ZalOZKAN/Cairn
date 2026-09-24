@@ -71,6 +71,7 @@ persistence/memory.db-journal
 persistence/memory.db-wal
 persistence/memory.db-shm
 persistence/chroma/
+persistence/nudge-state.json
 *.jsonl
 """
 

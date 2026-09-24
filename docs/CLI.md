@@ -78,6 +78,12 @@ Sync decisions with `.cairn/decisions/`, one Markdown file per decision. Files a
 ### `cairn memory for-path <path>`
 Print the active decisions scoped to a file's directory (or its ancestors). With `--hook` it runs as a Claude Code `PreToolUse` hook: reads the hook JSON on stdin and prints `hookSpecificOutput.additionalContext`, or nothing when no decision applies. `cairn memory boot` now also lists active decisions (importance 2+).
 
+### `cairn memory nudge`
+Claude Code `Stop` hook (reads the hook JSON on stdin). When the session has made at least `memory.nudge.edits` file edits (default 8) since the last `record_decision`, it exits with code 2 and a one-line reminder, so the agent records any decision it just settled. Fires at most once per threshold, never while already continuing from a nudge, and is silent otherwise. Included in `cairn mcp config --host claude-code --with-hooks`.
+
+### `cairn memory capture --from-git <range>`
+Reads `git log` for a revision range (default `HEAD~20..HEAD`), asks the helper model to propose design decisions, and shows each one for you to confirm. Nothing is recorded without a yes. Exits with a message when no helper model is configured.
+
 ### `cairn memory stale`
 List active decisions scoped to a path (`scope_path`) whose path has received at least `memory.stale.commits` commits (default 10) since the decision was recorded or last confirmed. Such decisions are also marked `NEEDS REVIEW` in recall output. Nothing is ever invalidated automatically. Repo-wide decisions and non-git projects are never flagged.
 

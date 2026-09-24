@@ -295,7 +295,12 @@ class CairnMCPServer:
                   "Current task, status, and last handoff for this project.",
                   {}),
             _tool("record_decision",
-                  "Record a first-class decision. Call this tool whenever an architectural or design decision is made in the conversation. Please also pass reasoning and at least one alternative so future-you can audit the choice. "
+                  "Record a settled decision so it is not re-argued later. Call it the moment a choice "
+                  "between options is settled, by you or the user: a library or tool, an architecture "
+                  "or pattern, a data model, an API shape, a convention, a trade-off, or 'we tried X "
+                  "and it did not work'. Pass reasoning, the rejected alternatives, and scope_path "
+                  "when it only applies to part of the repo. If it replaces an earlier decision, pass "
+                  "supersedes. The decision is saved as a reviewable file in .cairn/decisions/. "
                   "If the decision is a standing preference that would apply to any project, not just this codebase (e.g. 'always use pnpm over npm', 'prefer functional components in React'), pass scope='global' unprompted so it isn't re-decided next project. "
                   "If `memory.conflict.enabled` is set in config, the response may include a `conflicts` field flagging prior decisions this one may contradict, treat it as a prompt to ask the user, never as a reason to silently invalidate anything.",
                   {"decision": _str("The decision in one sentence"),

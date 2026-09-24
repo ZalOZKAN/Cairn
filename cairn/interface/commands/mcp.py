@@ -51,6 +51,10 @@ _HOOK_SNIPPETS = {
                 {"matcher": "Edit|Write|MultiEdit",
                  "hooks": [{"type": "command", "command": f"{cmd} memory for-path --hook"}]}
             ],
+            # Reminds the agent to record decisions after many unrecorded edits.
+            "Stop": [
+                {"hooks": [{"type": "command", "command": f"{cmd} memory nudge"}]}
+            ],
         }
     }, indent=2),
 }

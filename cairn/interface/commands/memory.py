@@ -335,6 +335,84 @@ def memory_for_path(
     console.print(text or f"[dim]No path-scoped decisions for {path}.[/dim]", markup=False)
 
 
+@memory_app.command("nudge")
+def memory_nudge():
+    """Claude Code Stop hook (reads hook JSON on stdin): remind the agent to
+    record decisions after many edits with none recorded. Silent otherwise."""
+    import json
+    import sys
+    from cairn.config.loader import load_config
+    from cairn.memory.capture import nudge_message
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
+        return
+    project_dir = Path(payload.get("cwd") or Path.cwd())
+    cairn_dir = project_dir / ".cairn"
+    if not cairn_dir.is_dir():
+        return
+    config = load_config(cairn_dir / "config.yaml" if (cairn_dir / "config.yaml").exists() else None)
+    threshold = int(((config.get("memory") or {}).get("nudge") or {}).get("edits", 8))
+    msg = nudge_message(payload, cairn_dir / "persistence" / "nudge-state.json", threshold)
+    if msg:
+        # Exit code 2 + stderr: Claude Code shows stderr to the model and keeps going.
+        print(msg, file=sys.stderr)
+        raise typer.Exit(code=2)
+
+
+@memory_app.command("capture")
+def memory_capture(
+    rev_range: str = typer.Option("HEAD~20..HEAD", "--from-git", help="git revision range to read"),
+):
+    """Propose decisions from git history with the helper model; you confirm each."""
+    import subprocess
+    from cairn.core import Project
+    from cairn.memory.capture import propose_from_git
+
+    project = Project(load_session=False)
+    log = subprocess.run(
+        ["git", "log", "--stat", "--format=commit %h%n%s%n%n%b", rev_range],
+        cwd=project.project_dir, capture_output=True, text=True, encoding="utf-8", errors="ignore",
+    )
+    if log.returncode != 0:
+        console.print(f"[red]git log failed: {log.stderr.strip()}[/red]", markup=False)
+        raise typer.Exit(code=1)
+    if not log.stdout.strip():
+        console.print("[yellow]No commits in that range.[/yellow]")
+        return
+    with console.status("[bold green]Reading commits..."):
+        proposals = propose_from_git(log.stdout, project.helper_call)
+    if proposals is None:
+        console.print(
+            "[yellow]No helper model available (memory_helper_model unset or unreachable). "
+            "Nothing was recorded.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+    if not proposals:
+        console.print("[dim]No design decisions found in that range.[/dim]")
+        return
+    recorded = 0
+    for p in proposals:
+        console.print(Panel(
+            f"{p['decision']}\n\n[dim]why:[/dim] {p.get('reasoning') or '(none given)'}"
+            f"\n[dim]path:[/dim] {p.get('scope_path') or 'repo-wide'}"
+            f"   [dim]commit:[/dim] {p.get('commit') or '?'}",
+            title="Proposed decision", border_style="cyan",
+        ))
+        if typer.confirm("Record it?", default=False):
+            evidence = [{"source": f"commit {p['commit']}", "claim": p["decision"]}] if p.get("commit") else None
+            project.memory.record_decision(
+                p["decision"],
+                reasoning=p.get("reasoning") or None,
+                alternatives=[a for a in (p.get("alternatives") or []) if isinstance(a, dict)] or None,
+                evidence=evidence,
+                scope_path=p.get("scope_path") or None,
+            )
+            recorded += 1
+    console.print(f"[green]Recorded {recorded} of {len(proposals)} proposals.[/green]")
+
+
 @memory_app.command("stale")
 def memory_stale():
     """List decisions whose code has changed a lot since they were recorded."""
