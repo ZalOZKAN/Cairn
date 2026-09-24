@@ -73,7 +73,13 @@ Generate the project decision dashboard (interactive single-file HTML).
   - `--filter [all|active|invalidated|recent]`: Filter decisions shown in the dashboard.
 
 ### `cairn memory export`
-Export all decisions from the SQLite database to a plain-text markdown file at `.cairn/persistence/memory/decisions.md` so that they can be tracked, diffed, and versioned in Git.
+Sync decisions with `.cairn/decisions/`, one Markdown file per decision. Files are the source of truth: new or hand-edited files are imported, decisions without a file are written out. This also runs automatically whenever Cairn opens a project, so you rarely need it by hand.
+
+### `cairn memory import-adr <dir>`
+Import existing Architecture Decision Records (Nygard or MADR style) from a folder such as `docs/adr` as Cairn decisions. Proposed/draft ADRs are skipped; re-running is a no-op for ADRs already imported.
+
+### `cairn memory reindex`
+Drop the decision rows from the SQLite index and rebuild them from `.cairn/decisions/*.md`. Use after a messy merge or if the local DB is lost.
 
 ### `cairn memory clear`
 Delete all SQLite memory entries. Requires confirmation unless bypassed.

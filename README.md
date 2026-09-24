@@ -116,8 +116,9 @@ my-project/
 └── .cairn/
     ├── config.yaml             # decay, dedup, helper model
     ├── SYSTEM.md               # your project context (hand-written)
+    ├── decisions/              # one .md per decision: commit these, review them in PRs
     └── persistence/
-        ├── memory.db           # SQLite: decay-aware recall, temporal validity
+        ├── memory.db           # SQLite index (gitignored, rebuildable: cairn memory reindex)
         ├── state.json          # current task / status / handoff pointer
         ├── session-handoff.md  # "where I left off"
         ├── context-manifest.md # ~500-token project summary
@@ -149,7 +150,7 @@ You don't have to pick one: they compose.
 
 | Tier | How it works | IDE-side setup |
 |---|---|---|
-| **File format** | Reference `.cairn/SYSTEM.md` or `persistence/memory/decisions.md` in any IDE that lets you attach files. | None |
+| **File format** | Reference `.cairn/SYSTEM.md` or files in `.cairn/decisions/` in any IDE that lets you attach files. | None |
 | **CLI helpers** | `cairn memory boot --copy` → clipboard. `cairn memory check "<approach>"` → print. Pipe into any tool. | None |
 | **MCP server** | `cairn mcp serve` over stdio. The IDE calls `memory_recall`, `memory_store`, `record_decision` as tools. | One config block, JSON or TOML depending on host (see `cairn mcp config`) |
 

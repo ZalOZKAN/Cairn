@@ -43,7 +43,7 @@ def test_decision_export_goes_to_project_dir_not_cwd():
         root = Path(d)
         m = _project(root)
         m.record_decision("Adopt ruff for linting")
-        assert (root / ".cairn" / "persistence" / "memory" / "decisions.md").exists()
+        assert len(list((root / ".cairn" / "decisions").glob("*-adopt-ruff-for-linting.md"))) == 1
 
 
 def test_init_gitignore_keeps_decisions_committable():

@@ -289,8 +289,39 @@ def memory_clear(
 
 @memory_app.command("export")
 def memory_export():
-    """Export all decisions to .cairn/persistence/memory/decisions.md."""
-    from cairn.core import Agent
-    agent = Agent()
-    agent.memory._export_decisions_to_markdown()
-    console.print("[green]✓ Decisions exported to .cairn/persistence/memory/decisions.md[/green]")
+    """Sync decisions with .cairn/decisions/*.md (one committed file per decision)."""
+    from cairn.core import Project
+    project = Project(load_session=False)
+    counts = project.memory.sync_decision_files()
+    console.print(f"[green]Decision files synced:[/green] {counts}")
+
+
+@memory_app.command("import-adr")
+def memory_import_adr(
+    adr_dir: Path = typer.Argument(..., help="Folder of ADR markdown files, e.g. docs/adr"),
+):
+    """Import existing ADRs (Nygard or MADR) as Cairn decisions."""
+    from cairn.core import Project
+    if not adr_dir.is_dir():
+        console.print(f"[red]Not a folder: {adr_dir}[/red]")
+        raise typer.Exit(code=1)
+    project = Project(load_session=False)
+    try:
+        counts = project.memory.import_adrs(adr_dir)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]ADR import:[/green] {counts}")
+
+
+@memory_app.command("reindex")
+def memory_reindex():
+    """Rebuild the decision index in SQLite from .cairn/decisions/*.md."""
+    from cairn.core import Project
+    project = Project(load_session=False)
+    try:
+        counts = project.memory.reindex_decisions()
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Reindexed from files:[/green] {counts}")
