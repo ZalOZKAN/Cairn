@@ -84,6 +84,9 @@ Claude Code `Stop` hook (reads the hook JSON on stdin). When the session has mad
 ### `cairn memory capture --from-git <range>`
 Reads `git log` for a revision range (default `HEAD~20..HEAD`), asks the helper model to propose design decisions, and shows each one for you to confirm. Nothing is recorded without a yes. Exits with a message when no helper model is configured.
 
+### `cairn memory stats`
+Local usage counters from `.cairn/persistence/stats.json` (gitignored, never sent anywhere): how many times the agent called each Cairn MCP tool and how often it returned something, plus the number of decision files. Use it to judge whether the agent is actually recording and using decisions.
+
 ### `cairn memory stale`
 List active decisions scoped to a path (`scope_path`) whose path has received at least `memory.stale.commits` commits (default 10) since the decision was recorded or last confirmed. Such decisions are also marked `NEEDS REVIEW` in recall output. Nothing is ever invalidated automatically. Repo-wide decisions and non-git projects are never flagged.
 

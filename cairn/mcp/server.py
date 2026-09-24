@@ -43,6 +43,7 @@ from typing import Any
 from cairn import __version__
 from cairn.memory.decision_files import format_brief
 from cairn.memory.injector import AGENT_GUIDE
+from cairn.memory.stats import bump
 
 
 class CairnMCPServer:
@@ -223,9 +224,12 @@ class CairnMCPServer:
         if handler is None:
             return f"Unknown tool: {name}"
         try:
-            return handler(self, args)
+            text = handler(self, args)
         except Exception as exc:
-            return f"Error in {name}: {exc}"
+            text = f"Error in {name}: {exc}"
+        hit = not (text.startswith("(no") or text.startswith("Error in"))
+        bump(self.project_dir, name, hit=hit)
+        return text
 
     # ---- json helpers --------------------------------------------------
 

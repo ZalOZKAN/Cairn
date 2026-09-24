@@ -138,12 +138,24 @@ class Memory:
     def _init_fts5(self, conn: sqlite3.Connection) -> bool:
         fts5_enabled = False
         try:
+            existing = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+            ).fetchone()
+            needs_rebuild = existing is not None and "porter" not in (existing[0] or "")
+            if needs_rebuild:
+                # Pre-porter index: "floats" never matched "float". Recreate with stemming.
+                for trg in ("trg_memories_ai", "trg_memories_ad", "trg_memories_au"):
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trg}")
+                conn.execute("DROP TABLE memories_fts")
             conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 prompt,
                 response,
                 content=memories,
-                content_rowid=id
+                content_rowid=id,
+                tokenize='porter unicode61'
             )""")
+            if existing is None or needs_rebuild:
+                conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
             conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON memories BEGIN
               INSERT INTO memories_fts(rowid, prompt, response) VALUES (new.id, new.prompt, new.response);
             END;""")
@@ -155,10 +167,6 @@ class Memory:
               INSERT INTO memories_fts(rowid, prompt, response) VALUES (new.id, new.prompt, new.response);
             END;""")
             
-            count_mem = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-            count_fts = conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]
-            if count_mem > 0 and count_fts == 0:
-                conn.execute("INSERT INTO memories_fts(rowid, prompt, response) SELECT id, prompt, response FROM memories")
             conn.commit()
             fts5_enabled = True
         except sqlite3.OperationalError as e:
@@ -484,7 +492,8 @@ class Memory:
             with sqlite_connect(db_path) as conn:
                 try:
                     rows = conn.execute(
-                        "SELECT id, prompt, response, timestamp, kind, importance, -bm25(memories_fts) AS score_bm25 "
+                        "SELECT memories.id, memories.prompt, memories.response, memories.timestamp, "
+                        "memories.kind, memories.importance, -bm25(memories_fts) AS score_bm25 "
                         "FROM memories JOIN memories_fts ON memories.id = memories_fts.rowid "
                         "WHERE memories.valid_until IS NULL AND memories_fts MATCH ?" + path_sql + " "
                         "ORDER BY score_bm25 DESC LIMIT 100",
@@ -815,8 +824,7 @@ class Memory:
         """
         import json as _json
 
-        approach_kw = set(self._extract_keywords(approach).split(","))
-        approach_kw.discard("")
+        approach_kw = self._stems(approach)
         if len(approach_kw) < 2:
             return []
 
@@ -843,7 +851,7 @@ class Memory:
                         alts = []
                     for alt in alts:
                         option = alt.get("option") or ""
-                        opt_kw = set(self._extract_keywords(option).split(","))
+                        opt_kw = self._stems(option)
                         if len(approach_kw & opt_kw) >= 2:
                             results.append({
                                 "score": score,
@@ -856,7 +864,7 @@ class Memory:
                             })
 
                 if valid_until is not None:
-                    own_kw = set(self._extract_keywords(prompt).split(","))
+                    own_kw = self._stems(prompt)
                     if len(approach_kw & own_kw) >= 2:
                         sup_by = superseded_by
                         if is_global and sup_by is not None:
@@ -1335,6 +1343,21 @@ class Memory:
             )
 
     # ------------------------- helpers -------------------------
+
+    @classmethod
+    def _stems(cls, text: str) -> set[str]:
+        """Keywords reduced to a crude stem so "floats"/"float" and
+        "rendering"/"render" match. Query-time only: never stored."""
+        out = set()
+        for w in cls._extract_keywords(text).split(","):
+            if not w:
+                continue
+            for suf in ("ing", "ed", "es", "s"):
+                if len(w) > len(suf) + 3 and w.endswith(suf):
+                    w = w[: -len(suf)]
+                    break
+            out.add(w)
+        return out
 
     @staticmethod
     def _extract_keywords(text: str) -> str:

@@ -34,7 +34,22 @@ same ambiguity.
   - **LongMemEval-S** (`xiaowu0162/longmemeval`), MIT.
 - **Runner:** `scripts/benchmark_external.py`.
 
-### Results, 2026-08-09, subset run (see exact counts per row)
+### Results: 2026-09-24, after the FTS5 fix (sqlite rows re-run)
+
+Until 2026-09-24 the FTS5/BM25 recall query failed on every call
+("ambiguous column name") and silently fell back to plain keyword overlap,
+so every earlier `sqlite` number below measured the fallback, not FTS5. The
+fix also switched the index to the `porter` stemming tokenizer.
+
+| Dataset | Backend | k | evidence-recall@k | items | p50 recall latency |
+|---|---|---|---|---|---|
+| LoCoMo (2/10 convs) | sqlite | 10 | **65.4%** (was 54.5%) | 197/301 | 12.1 ms |
+| LongMemEval-S (10/500 q) | sqlite | 10 | **100.0%** (was 90.0%) | 10/10 | 13.2 ms |
+
+Hybrid rows were not re-run. The sqlite LoCoMo row now edges out the old
+hybrid row (64.3%, 1 conversation) at roughly a twentieth of the latency.
+
+### Results: 2026-08-09 (sqlite rows measured the keyword fallback, see above), subset run (see exact counts per row)
 
 | Dataset | Backend | k | evidence-recall@k | items | p50 recall latency |
 |---|---|---|---|---|---|
@@ -76,3 +91,31 @@ python scripts/benchmark_external.py --skip-locomo --longmemeval-n 2 --hybrid --
   here rather than smoothed over.
 - **Do not cite a single number as "Cairn's LoCoMo score."** Cite dataset +
   backend + k + subset size together, exactly as the table does.
+
+
+---
+
+## Decision eval (does the right decision surface at the right time?)
+
+```bash
+python scripts/eval_decisions.py --show-misses
+```
+
+30 realistic decisions (each with a rejected alternative, most scoped to a
+path), deterministic, no LLM. Measures the three moments Cairn exists for:
+
+| Question | Metric | 2026-09-24 |
+|---|---|---|
+| Agent proposes something a decision rejected: does `check_approach` return that decision? | top-3 hit rate | **93%** (28/30) |
+| Agent asks a paraphrased question: does `recall` return the decision? | top-3 hit rate | **93%** (28/30) |
+| Agent proposes something unrelated: does `check_approach` cry wolf? | false-positive rate (15 probes) | **0%** |
+| Agent edits a file: does `decisions_for_path` include that path's decision? | recall | **100%** |
+| ...and leave out decisions from other paths? | wrong-path results | **0** |
+
+Before the same-day fixes (stemming, FTS5 query) the first two rows were 87%
+and 83%. Remaining misses are single-keyword proposals ("switch to MongoDB",
+"put it in the Redux store"): `check_approach` requires two shared keywords
+on purpose, which is what keeps the false-positive rate at zero. Honest
+limits: one author wrote both the decisions and the probes, and keyword
+matching cannot bridge true synonyms ("linter" vs "ruff"). Real-usage
+numbers come from `cairn memory stats` during dogfooding.

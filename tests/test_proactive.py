@@ -71,3 +71,14 @@ def test_hook_is_silent_when_nothing_applies(root):
     out = subprocess.run([sys.executable, "-c", code], input=json.dumps(payload),
                          capture_output=True, text=True, cwd=root)
     assert out.returncode == 0 and out.stdout.strip() == ""
+
+
+def test_tool_calls_are_counted_locally(root):
+    from cairn.memory.stats import load
+    srv = CairnMCPServer(project_dir=root)
+    srv._call_tool("record_decision", {"decision": "Use zod for validation", "scope_path": "src"})
+    srv._call_tool("decisions_for_path", {"path": "src/a.ts"})
+    srv._call_tool("decisions_for_path", {"path": "docs/x.md"})
+    tools = load(root)["tools"]
+    assert tools["record_decision"]["calls"] == 1
+    assert tools["decisions_for_path"] == {"calls": 2, "hits": 1}

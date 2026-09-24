@@ -413,6 +413,28 @@ def memory_capture(
     console.print(f"[green]Recorded {recorded} of {len(proposals)} proposals.[/green]")
 
 
+@memory_app.command("stats")
+def memory_stats():
+    """Local usage counters: how often the agent used each Cairn tool, and hit rates."""
+    from cairn.memory.stats import load
+    data = load(Path.cwd())
+    tools = data.get("tools") or {}
+    decisions_dir = Path.cwd() / ".cairn" / "decisions"
+    n_files = len(list(decisions_dir.glob("*.md"))) if decisions_dir.is_dir() else 0
+    console.print(f"Decision files: {n_files}")
+    if not tools:
+        console.print("[dim]No MCP tool calls recorded yet.[/dim]")
+        return
+    table = Table(title=f"Tool usage since {str(data.get('since', '?'))[:10]}", box=box.ROUNDED)
+    table.add_column("Tool", style="cyan")
+    table.add_column("Calls", justify="right")
+    table.add_column("Returned something", justify="right")
+    for name, e in sorted(tools.items(), key=lambda kv: -kv[1]["calls"]):
+        rate = f"{e['hits'] / e['calls']:.0%}" if e["calls"] else "-"
+        table.add_row(name, str(e["calls"]), f"{e['hits']} ({rate})")
+    console.print(table)
+
+
 @memory_app.command("stale")
 def memory_stale():
     """List decisions whose code has changed a lot since they were recorded."""
