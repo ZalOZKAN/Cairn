@@ -296,6 +296,42 @@ def memory_export():
     console.print(f"[green]Decision files synced:[/green] {counts}")
 
 
+@memory_app.command("stale")
+def memory_stale():
+    """List decisions whose code has changed a lot since they were recorded."""
+    from cairn.core import Project
+    project = Project(load_session=False)
+    rows = project.memory.stale_decisions()
+    if not rows:
+        console.print("[green]No decisions need review.[/green]")
+        return
+    table = Table(title="Decisions that need review", box=box.ROUNDED)
+    table.add_column("ID", style="cyan")
+    table.add_column("Path", style="magenta")
+    table.add_column("Commits since", justify="right")
+    table.add_column("Decision", style="white")
+    for r in rows:
+        table.add_row(str(r["id"]), r["path"], str(r["commits_since"]), r["decision"][:70])
+    console.print(table)
+    console.print(
+        "[dim]Still right? cairn memory confirm <id>. "
+        "Changed? record a new decision with supersedes=<id>.[/dim]"
+    )
+
+
+@memory_app.command("confirm")
+def memory_confirm(mem_id: str = typer.Argument(..., help="Decision id")):
+    """Confirm a decision still holds (resets its staleness counter)."""
+    from cairn.core import Project
+    project = Project(load_session=False)
+    try:
+        ok = project.memory.confirm_decision(mem_id)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    console.print("[green]Confirmed.[/green]" if ok else f"[yellow]No decision #{mem_id}.[/yellow]")
+
+
 @memory_app.command("import-adr")
 def memory_import_adr(
     adr_dir: Path = typer.Argument(..., help="Folder of ADR markdown files, e.g. docs/adr"),

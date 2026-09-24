@@ -75,6 +75,12 @@ Generate the project decision dashboard (interactive single-file HTML).
 ### `cairn memory export`
 Sync decisions with `.cairn/decisions/`, one Markdown file per decision. Files are the source of truth: new or hand-edited files are imported, decisions without a file are written out. This also runs automatically whenever Cairn opens a project, so you rarely need it by hand.
 
+### `cairn memory stale`
+List active decisions scoped to a path (`scope_path`) whose path has received at least `memory.stale.commits` commits (default 10) since the decision was recorded or last confirmed. Such decisions are also marked `NEEDS REVIEW` in recall output. Nothing is ever invalidated automatically. Repo-wide decisions and non-git projects are never flagged.
+
+### `cairn memory confirm <id>`
+Mark a decision as still valid: re-anchors it to the current git HEAD, which resets its staleness counter (the anchor is saved in the decision file, so teammates get it too).
+
 ### `cairn memory import-adr <dir>`
 Import existing Architecture Decision Records (Nygard or MADR style) from a folder such as `docs/adr` as Cairn decisions. Proposed/draft ADRs are skipped; re-running is a no-op for ADRs already imported.
 

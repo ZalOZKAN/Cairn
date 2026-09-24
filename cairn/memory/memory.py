@@ -84,6 +84,11 @@ class Memory:
         self.redact_enabled = redact_cfg.get("enabled", True)
         self._redact_extra_patterns = redact_cfg.get("extra_patterns", [])
 
+        stale_cfg = cfg.get("stale", {})
+        self.stale_enabled = stale_cfg.get("enabled", True)
+        self.stale_commits = int(stale_cfg.get("commits", 10))
+        self._git_cache: dict[tuple, int | None] = {}
+
         # async store
         self.async_store_enabled = cfg.get("async_store", True)
         self._write_queue: "queue.Queue" = queue.Queue()
@@ -448,7 +453,12 @@ class Memory:
                 date_str = r["timestamp"][:10]
             display_id = f"g{r['id']}" if r.get("scope") == "global" else r["id"]
             tag = " · global" if r.get("scope") == "global" else ""
-            header = f"[#{display_id} · {r['kind']} · {date_str}{tag}]"
+            flag = ""
+            if r.get("scope") == "project" and r["kind"] == "decision":
+                st = self.staleness(r["id"])
+                if st:
+                    flag = f" · NEEDS REVIEW: {st['commits_since']} commits touched {st['path']} since recorded"
+            header = f"[#{display_id} · {r['kind']} · {date_str}{tag}{flag}]"
             content = r["content"][:600]
             formatted.append(f"{header}\n{content}")
         return "\n---\n".join(formatted)
@@ -788,6 +798,7 @@ class Memory:
             "scope": "global" if is_global else "project",
             "supersedes": _tag(supersedes_id[0]) if supersedes_id else None,
             "evidence": evidence,
+            "stale": None if is_global else self.staleness(num_id),
         }
         return out
 
@@ -977,17 +988,85 @@ class Memory:
         return cairn_dir / DECISIONS_DIRNAME if cairn_dir.is_dir() else None
 
     def _git_head(self) -> str | None:
+        return self._git("rev-parse", "HEAD") or None
+
+    def _git(self, *args: str) -> str | None:
         import subprocess
         try:
             out = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=self.project_dir,
-                capture_output=True, text=True, timeout=5,
+                ["git", *args], cwd=self.project_dir,
+                capture_output=True, text=True, timeout=10,
             )
         except (OSError, subprocess.SubprocessError):
             return None
-        if out.returncode != 0:
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    def _commits_since(self, anchor: str, path: str) -> int | None:
+        head = self._git("rev-parse", "HEAD")
+        if head is None:
             return None
-        return out.stdout.strip() or None
+        key = (head, anchor, path)
+        if key not in self._git_cache:
+            n = self._git("rev-list", "--count", f"{anchor}..HEAD", "--", path)
+            self._git_cache[key] = int(n) if n and n.isdigit() else None
+        return self._git_cache[key]
+
+    def staleness(self, mem_id: int | str) -> dict | None:
+        """{"commits_since", "path", "threshold"} when an active, path-scoped
+        project decision has had >= `memory.stale.commits` commits touch its
+        path since it was recorded or last confirmed; else None. Repo-wide
+        decisions (no path), non-git projects, and anchors that no longer
+        exist (rewritten history) are never flagged: no signal beats a wrong one."""
+        if not self.stale_enabled:
+            return None
+        db_path, num_id = self._resolve_scope_id(mem_id)
+        if db_path != self.db_path:
+            return None
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT anchor_commit, scope_path FROM memories "
+                "WHERE id=? AND kind='decision' AND valid_until IS NULL",
+                (num_id,),
+            ).fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+        n = self._commits_since(row[0], row[1])
+        if n is None or n < self.stale_commits:
+            return None
+        return {"commits_since": n, "path": row[1], "threshold": self.stale_commits}
+
+    def stale_decisions(self) -> list[dict]:
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, uid, prompt FROM memories WHERE kind='decision' "
+                "AND valid_until IS NULL AND anchor_commit IS NOT NULL AND scope_path IS NOT NULL "
+                "ORDER BY id"
+            ).fetchall()
+        out = []
+        for rid, uid, prompt in rows:
+            st = self.staleness(rid)
+            if st:
+                out.append({"id": rid, "uid": uid, "decision": prompt, **st})
+        out.sort(key=lambda r: r["commits_since"], reverse=True)
+        return out
+
+    def confirm_decision(self, mem_id: int | str) -> bool:
+        """Mark a decision as still valid: re-anchor it to the current HEAD."""
+        db_path, num_id = self._resolve_scope_id(mem_id)
+        if db_path != self.db_path:
+            raise ValueError("only project decisions track staleness")
+        head = self._git_head()
+        if head is None:
+            raise ValueError("not a git repository (or no commits yet)")
+        with sqlite_connect(self.db_path) as conn:
+            cur = conn.execute(
+                "UPDATE memories SET anchor_commit=? WHERE id=? AND kind='decision'",
+                (head, num_id),
+            )
+            conn.commit()
+        if cur.rowcount:
+            self._export_decision(num_id)
+        return cur.rowcount > 0
 
     def _decision_as_file_dict(self, conn: sqlite3.Connection, num_id: int) -> dict | None:
         import json as _json

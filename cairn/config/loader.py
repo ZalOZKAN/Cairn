@@ -26,6 +26,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "recency_boost": 1.5,
         "decay": {"enabled": True, "half_life_days": 30},
         "dedup": {"enabled": True, "threshold": 0.92},
+        # A path-scoped decision is flagged "needs review" once this many
+        # commits have touched its path since it was recorded or confirmed.
+        "stale": {"enabled": True, "commits": 10},
         "conflict": {
             "enabled": False,
             "model": "groq/llama-3.3-70b-versatile",
