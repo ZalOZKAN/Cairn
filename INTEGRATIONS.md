@@ -20,7 +20,7 @@ Below: what to paste *where*, plus any host-specific gotchas.
 
 - **Config location:** `claude mcp add cairn -- cairn mcp serve` (recommended), or
   edit `.mcp.json` (project scope) / `~/.claude.json` (user scope, `mcpServers`
-  key) directly. **Not** `claude_desktop_config.json`, that file belongs to
+  key) directly. **Not** `claude_desktop_config.json`: that file belongs to
   Claude *Desktop*, a different app; using it here is a documented bug we fixed
   2026-08-09.
 - **Restart needed:** yes, quit fully, reopen.
