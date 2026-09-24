@@ -65,6 +65,15 @@ memory:
 memory_helper_model: ollama/qwen2.5:3b
 """
 
+# Folder format rule: volatile data stays local, decisions get committed.
+GITIGNORE_TEMPLATE = """persistence/memory.db
+persistence/memory.db-journal
+persistence/memory.db-wal
+persistence/memory.db-shm
+persistence/chroma/
+*.jsonl
+"""
+
 PROFILE_TEMPLATES = {
     "cloud": CLOUD_CONFIG_TEMPLATE,
     "local": LOCAL_CONFIG_TEMPLATE,

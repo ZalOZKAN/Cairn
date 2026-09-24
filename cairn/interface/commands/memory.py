@@ -107,6 +107,17 @@ def memory_status():
 
     console.print(table)
 
+    from cairn.config.loader import load_config
+    from cairn.memory.memory import LEGACY_SHARED_DB, resolve_db_path
+    db_path = resolve_db_path(load_config().get("memory", {}))
+    console.print(f"[dim]Project DB: {db_path}[/dim]")
+    legacy = Path(LEGACY_SHARED_DB).expanduser()
+    if legacy.exists() and legacy != db_path:
+        console.print(
+            f"[yellow]Note: {legacy} holds data from before per-project DBs. "
+            "It is no longer read for this project and is left untouched.[/yellow]"
+        )
+
     files = session_mgr.list_memory_files()
     if files:
         console.print(f"\n[dim]Memory files: {', '.join(files)}[/dim]")

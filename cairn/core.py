@@ -41,7 +41,7 @@ class Project:
             if candidate.exists():
                 config_path = candidate
         self.config: dict[str, Any] = load_config(config_path)
-        self.memory = Memory(self.config)
+        self.memory = Memory(self.config, project_dir=self.project_dir)
         self.security = SecurityGuard(self.config)
         self.session = SessionManager(self.project_dir)
         self.injector = ContextInjector(self.project_dir)

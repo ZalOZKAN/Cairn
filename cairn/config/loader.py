@@ -14,7 +14,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "backend": "sqlite",
         "max_results": 5,
-        "db_path": "~/.cairn/memory.db",
+        # None = <project>/.cairn/persistence/memory.db when the project has a .cairn/
+        # folder, else ~/.cairn/memory.db. See memory.resolve_db_path.
+        "db_path": None,
         "global_enabled": True,
         "global_db_path": "~/.cairn/global.db",
         "registry_path": "~/.cairn/projects.json",

@@ -25,15 +25,15 @@ from typing import Any
 
 import typer
 
-from cairn.memory.memory import sqlite_connect
+from cairn.memory.memory import resolve_db_path, sqlite_connect
 
 
 FILTERS = {"all", "active", "invalidated", "recent"}
 
 
-def _resolve_db_paths(config: dict) -> tuple[Path, Path | None]:
+def _resolve_db_paths(config: dict, project_dir: Path | None = None) -> tuple[Path, Path | None]:
     mem_cfg = config.get("memory", {}) or {}
-    db_path = Path(mem_cfg.get("db_path", "~/.cairn/memory.db")).expanduser()
+    db_path = resolve_db_path(mem_cfg, project_dir)
     global_db_path = None
     if mem_cfg.get("global_enabled", True):
         global_db_path = Path(mem_cfg.get("global_db_path", "~/.cairn/global.db")).expanduser()
@@ -218,7 +218,7 @@ def write_dashboard(project_dir: Path, filt: str = "all") -> Path:
     """Generate the dashboard HTML at .cairn/persistence/dashboard.html."""
     from cairn.config.loader import load_config
     config = load_config()
-    db_path, global_db_path = _resolve_db_paths(config)
+    db_path, global_db_path = _resolve_db_paths(config, project_dir)
     other_projects = _other_projects(config, project_dir)
     data = collect_dashboard_data(
         db_path, filt=filt, global_db_path=global_db_path, other_projects=other_projects
@@ -239,8 +239,8 @@ def dashboard_command(
     """Generate the project dashboard as a single self-contained HTML file."""
     from cairn.config.loader import load_config
     config = load_config()
-    db_path, global_db_path = _resolve_db_paths(config)
     project_dir = Path.cwd()
+    db_path, global_db_path = _resolve_db_paths(config, project_dir)
     other_projects = _other_projects(config, project_dir)
     data = collect_dashboard_data(
         db_path, filt=filt, global_db_path=global_db_path, other_projects=other_projects

@@ -29,15 +29,32 @@ def sqlite_connect(db_path: Path | str) -> sqlite3.Connection:
 
 _SENTINEL = object()
 
+LEGACY_SHARED_DB = "~/.cairn/memory.db"
+
+
+def resolve_db_path(mem_cfg: dict, project_dir: Path | str | None = None) -> Path:
+    """Project DB location. Explicit `db_path` wins (relative paths resolve
+    against the project dir). Otherwise each project with a `.cairn/` folder
+    gets its own DB, so decisions never leak between repos."""
+    base = Path(project_dir) if project_dir else Path.cwd()
+    explicit = mem_cfg.get("db_path")
+    if explicit:
+        p = Path(explicit).expanduser()
+        return p if p.is_absolute() else base / p
+    if (base / ".cairn").is_dir():
+        return base / ".cairn" / "persistence" / "memory.db"
+    return Path(LEGACY_SHARED_DB).expanduser()
+
 
 class Memory:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, project_dir: Path | str | None = None):
         self._config = config  # kept for lazily-constructed helpers (e.g. ConflictDetector)
+        self.project_dir = Path(project_dir) if project_dir else Path.cwd()
         cfg = config.get("memory", {})
         self.enabled = cfg.get("enabled", True)
         self.max_results = cfg.get("max_results", 5)
         self.backend = cfg.get("backend", "sqlite")
-        db_path = Path(cfg.get("db_path", "~/.cairn/memory.db")).expanduser()
+        db_path = resolve_db_path(cfg, self.project_dir)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
 
@@ -943,7 +960,7 @@ class Memory:
         return ok
 
     def _export_decisions_to_markdown(self) -> None:
-        cairn_dir = Path.cwd() / ".cairn"
+        cairn_dir = self.project_dir / ".cairn"
         if not cairn_dir.exists():
             return
         persistence_dir = cairn_dir / "persistence" / "memory"
