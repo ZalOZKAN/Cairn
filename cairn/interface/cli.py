@@ -1,12 +1,9 @@
-"""Cairn CLI, memory + skills file format, no LLM runtime."""
+"""Cairn CLI, memory file format, no LLM runtime."""
 import typer
 from rich.console import Console
 
 from cairn.interface.commands.memory import memory_app
 from cairn.interface.commands.init import init_cmd
-from cairn.interface.commands.skill import skill_app
-from cairn.interface.commands.workflow import workflow_app
-from cairn.interface.commands.skills_list import skills_cmd
 from cairn.interface.commands.mcp import mcp_app
 from cairn.interface.commands.version import version_cmd
 
@@ -18,9 +15,6 @@ app = typer.Typer(
 console = Console()
 
 app.add_typer(memory_app, name="memory")
-app.add_typer(skill_app, name="skill")
-app.add_typer(workflow_app, name="workflow")
-app.command("skills")(skills_cmd)
 app.add_typer(mcp_app, name="mcp")
 app.command("init")(init_cmd)
 app.command("version")(version_cmd)

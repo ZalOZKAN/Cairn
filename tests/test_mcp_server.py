@@ -19,7 +19,8 @@ def srv():
         cfg_dir = project / ".cairn"
         cfg_dir.mkdir()
         (cfg_dir / "config.yaml").write_text(
-            f"memory:\n  db_path: {td}/mem.db\n  async_store: false\n",
+            f"memory:\n  db_path: {td}/mem.db\n  async_store: false\n"
+            f"  global_db_path: {td}/global.db\n",
             encoding="utf-8",
         )
         s = CairnMCPServer(project_dir=project)
@@ -33,9 +34,8 @@ def test_tools_list_returns_expected_set(srv):
     expected = {
         "memory_recall", "memory_store", "memory_recent", "memory_search",
         "memory_invalidate", "memory_boot", "memory_status",
-        "list_skills", "get_skill",
-        "list_workflows", "get_workflow",
-        "list_agents", "get_agent",
+        "record_decision", "memory_get", "memory_thread",
+        "decision_audit_score", "check_approach", "memory_save",
     }
     assert expected <= names
 
@@ -60,7 +60,7 @@ def test_tools_list_method(srv):
     req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
     resp = srv._handle(req)
     assert "tools" in resp["result"]
-    assert len(resp["result"]["tools"]) >= 13
+    assert len(resp["result"]["tools"]) == 13
 
 
 # --- memory tools end-to-end ---------------------------------------------
@@ -115,41 +115,6 @@ def test_memory_invalidate_hides_entry(srv):
     assert _call(srv, "memory_invalidate", {"id": row_id, "reason": "outdated"}) == "invalidated"
     found = json.loads(_call(srv, "memory_search", {"query": "temporary"}))
     assert found == []
-
-
-# --- skills/workflows/agents file access ---------------------------------
-
-def test_list_skills_returns_builtin(srv):
-    data = json.loads(_call(srv, "list_skills", {}))
-    aliases = {s["alias"] for s in data}
-    assert "@cr" in aliases
-
-
-def test_get_skill_returns_markdown(srv):
-    md = _call(srv, "get_skill", {"alias_or_name": "@cr"})
-    assert md and md != "(not found)"
-    assert len(md) > 50
-
-
-def test_list_workflows_includes_plan(srv):
-    data = json.loads(_call(srv, "list_workflows", {}))
-    assert "plan" in data
-
-
-def test_get_workflow_returns_markdown(srv):
-    md = _call(srv, "get_workflow", {"name": "/plan"})
-    assert md and md != "(not found)"
-
-
-def test_list_agents_includes_council(srv):
-    data = json.loads(_call(srv, "list_agents", {}))
-    assert "adversary" in data
-    assert "strategist" in data
-
-
-def test_get_agent_returns_markdown(srv):
-    md = _call(srv, "get_agent", {"name": "adversary"})
-    assert md and md != "(not found)"
 
 
 # --- decision provenance (Phase 2 Stream B) ------------------------------
@@ -317,6 +282,33 @@ def test_record_decision_warning_on_invalid_supersedes(srv):
     assert data["id"] is not None
     assert "warning" in data
     assert "supersedes id 9999 not found" in data["warning"]
+
+
+def test_memory_store_global_surfaces_in_a_different_project(srv):
+    """Görev 14: a scope='global' store shows up when recalling from a
+    completely separate project pointed at the same ~/.cairn/global.db."""
+    _call(srv, "memory_store", {
+        "prompt": "coding preference", "response": "always use TypeScript",
+        "scope": "global",
+    })
+    out = _call(srv, "memory_recall", {"query": "coding preference"})
+    assert "always use TypeScript" in out
+    assert "· global" in out
+
+    import tempfile
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as other_td:
+        other_project = Path(other_td)
+        cfg_dir = other_project / ".cairn"
+        cfg_dir.mkdir()
+        global_db_path = srv.project.memory.global_db_path
+        (cfg_dir / "config.yaml").write_text(
+            f"memory:\n  db_path: {other_td}/mem.db\n  async_store: false\n"
+            f"  global_db_path: {global_db_path}\n",
+            encoding="utf-8",
+        )
+        other_srv = CairnMCPServer(project_dir=other_project)
+        other_out = _call(other_srv, "memory_recall", {"query": "coding preference"})
+        assert "always use TypeScript" in other_out
 
 
 def test_memory_thread_explicit_id_and_topic(srv):

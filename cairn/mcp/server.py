@@ -4,22 +4,18 @@ Model Context Protocol tools.
 
 Any MCP host (Claude Code, Cursor, Antigravity, custom CLI) can connect
 to this server over stdio and gain read/write access to the project's
-persistent memory, skills, agents, and workflows.
+persistent memory.
 
 Run from a project directory:
 
     cairn mcp serve
 
-Claude Code config (`~/.claude/claude_desktop_config.json`):
-
-    {
-      "mcpServers": {
-        "cairn": {
-          "command": "cairn",
-          "args": ["mcp", "serve"]
-        }
-      }
-    }
+Client config: run `cairn mcp config --host <host>` for the exact block and
+file path for your host (Claude Code, Cursor, Codex, OpenCode, Windsurf,
+Zed, ...), the shape and format genuinely differ per host (Codex is TOML;
+Zed uses `context_servers`; OpenCode uses `type: "local"` with a combined
+command array), so there is no single snippet to paste here without risking
+staleness or a wrong host's syntax.
 
 Tools exposed:
     memory_recall      , semantic + keyword recall, decay-aware
@@ -33,12 +29,7 @@ Tools exposed:
     memory_get         , full record including evidence + supersedes chain
     memory_thread      , chronological versions of a decision topic
     decision_audit_score, completeness score 0/4..4/4 for a decision
-    list_skills        , enumerate available skills
-    get_skill          , return a skill's system-prompt markdown
-    list_workflows     , enumerate workflows
-    get_workflow       , return a workflow's markdown
-    list_agents        , enumerate agent role MDs
-    get_agent          , return an agent role markdown
+    check_approach     , has this approach already been rejected or abandoned?
 """
 from __future__ import annotations
 
@@ -256,12 +247,24 @@ class CairnMCPServer:
                                  "always match. Omit for unscoped, repo-wide recall.")},
                   required=["query"]),
             _tool("memory_store",
-                  "Add a new memory entry. Importance 1-3 controls ranking weight.",
+                  "Add a new memory entry. Importance 1-3 controls ranking weight. "
+                  "Set scope='global' WITHOUT being asked whenever the user states a "
+                  "preference or convention that isn't specific to this codebase, e.g. "
+                  "'I always use TypeScript', 'I write commit messages in Conventional "
+                  "Commits format', 'I don't like using any'. Anything that would still be "
+                  "true in a different repo belongs in global scope so it isn't re-explained "
+                  "next project. Leave scope at the 'project' default for facts tied to this "
+                  "specific codebase (its stack, its architecture, its bugs).",
                   {"prompt": _str("User-side prompt / topic"),
                    "response": _str("Assistant response / fact to remember"),
                    "importance": _int("1=normal, 2=decision, 3=critical", default=1),
                    "scope_path": _str("Optional workspace-relative path this entry applies to "
-                                       "(e.g. 'apps/api'). Omit for repo-wide.")},
+                                       "(e.g. 'apps/api'). Omit for repo-wide."),
+                   "scope": _str("'project' (default, this project's .cairn/) or 'global' "
+                                 "(~/.cairn/global.db, cross-project preferences/facts, "
+                                 "surfaces in every project's recall/search). See the tool "
+                                 "description above for when to pick 'global' unprompted.",
+                                 default="project")},
                   required=["prompt", "response"]),
             _tool("memory_recent",
                   "Return the N most recent valid memory entries.",
@@ -275,7 +278,8 @@ class CairnMCPServer:
                   required=["query"]),
             _tool("memory_invalidate",
                   "Retire a memory entry by id without deleting it.",
-                  {"id": _int("Memory row id"),
+                  {"id": _str("Memory row id, a plain number for a project entry, or "
+                               "'g<n>' (e.g. 'g12') for a global entry"),
                    "reason": _str("Why it's no longer valid", default="")},
                   required=["id"]),
             _tool("memory_boot",
@@ -287,24 +291,10 @@ class CairnMCPServer:
             _tool("memory_status",
                   "Current task, status, and last handoff for this project.",
                   {}),
-            _tool("list_skills",
-                  "List available skills (built-in + project-local).", {}),
-            _tool("get_skill",
-                  "Return a skill's markdown system prompt.",
-                  {"alias_or_name": _str("e.g. @cr or code-review")},
-                  required=["alias_or_name"]),
-            _tool("list_workflows", "List available workflows.", {}),
-            _tool("get_workflow",
-                  "Return a workflow's markdown system prompt.",
-                  {"name": _str("e.g. /plan or plan")},
-                  required=["name"]),
-            _tool("list_agents", "List available agent role MDs.", {}),
-            _tool("get_agent",
-                  "Return an agent role markdown.",
-                  {"name": _str("e.g. adversary")},
-                  required=["name"]),
             _tool("record_decision",
-                  "Record a first-class decision. Call this tool whenever an architectural or design decision is made in the conversation. Please also pass reasoning and at least one alternative so future-you can audit the choice.",
+                  "Record a first-class decision. Call this tool whenever an architectural or design decision is made in the conversation. Please also pass reasoning and at least one alternative so future-you can audit the choice. "
+                  "If the decision is a standing preference that would apply to any project, not just this codebase (e.g. 'always use pnpm over npm', 'prefer functional components in React'), pass scope='global' unprompted so it isn't re-decided next project. "
+                  "If `memory.conflict.enabled` is set in config, the response may include a `conflicts` field flagging prior decisions this one may contradict, treat it as a prompt to ask the user, never as a reason to silently invalidate anything.",
                   {"decision": _str("The decision in one sentence"),
                    "reasoning": _str("Why we chose this", default=""),
                    "alternatives": {"type": "array",
@@ -317,26 +307,44 @@ class CairnMCPServer:
                                 "items": {"type": "object", "properties": {
                                     "source": {"type": "string"},
                                     "claim": {"type": "string"}}}},
-                   "supersedes": _int("Prior decision id this replaces"),
+                   "supersedes": _str("Prior decision id this replaces, plain number for a "
+                                       "project decision, or 'g<n>' for a global decision"),
                    "chose_because": _str("Short tag for the deciding factor", default=""),
                    "importance": _int("1=normal, 2=decision, 3=critical", default=2),
                    "scope_path": _str("Optional workspace-relative path this decision applies "
-                                       "to (e.g. 'apps/api'). Omit for repo-wide.")},
+                                       "to (e.g. 'apps/api'). Omit for repo-wide. Only meaningful "
+                                       "for scope='project'."),
+                   "scope": _str("'project' (default, this project's .cairn/) or 'global' "
+                                 "(~/.cairn/global.db, cross-project decision, e.g. a coding "
+                                 "convention or preference that applies to every project).",
+                                 default="project")},
                   required=["decision"]),
+            _tool("check_approach",
+                  "Call this BEFORE proposing an architectural or implementation approach, checks "
+                  "whether something like it was already tried and rejected (a decision's rejected "
+                  "alternative) or abandoned (a decision later invalidated/superseded), in this "
+                  "project or globally. Returns the reason it didn't work last time. Empty result "
+                  "means no record of it, not a guarantee it's safe, just that Cairn has no memory "
+                  "of it being tried.",
+                  {"approach": _str("The approach being considered, in a sentence or two"),
+                   "limit": _int("Max matches to return", default=5)},
+                  required=["approach"]),
             _tool("memory_get",
                   "Full record for a memory id: reasoning, alternatives, evidence, supersedes chain.",
-                  {"id": _int("Memory row id")},
+                  {"id": _str("Memory row id, a plain number for a project entry, or "
+                               "'g<n>' (e.g. 'g12') for a global entry")},
                   required=["id"]),
             _tool("memory_thread",
-                  "Chronological versions of a decision topic. Provide 'id' to walk the supersedes chain, or 'topic' for keyword-overlap grouping.",
-                  {"id": _int("Decision ID to walk the chain"),
+                  "Chronological versions of a decision topic. Provide 'id' to walk the supersedes chain, or 'topic' for keyword-overlap grouping (which also searches global decisions when global memory is enabled).",
+                  {"id": _str("Decision ID to walk the chain, plain number for project, "
+                               "'g<n>' for global"),
                    "topic": _str("Keyword for decision group"),
                    "topic_or_id": _str("Deprecated: use id or topic instead"),
                    "limit": _int("Max entries", default=20)},
                   required=[]),
             _tool("decision_audit_score",
                   "Completeness score 0/4..4/4 for a decision: reasoning, alternatives, evidence, supersedes.",
-                  {"id": _int("Decision row id")},
+                  {"id": _str("Decision row id, plain number for project, 'g<n>' for global")},
                   required=["id"]),
             _tool("memory_save",
                   "Run the helper-LLM extractor over recent session entries. Hosts should "
@@ -361,6 +369,7 @@ def _h_store(srv: CairnMCPServer, args: dict) -> str:
         args.get("response", ""),
         importance=int(args.get("importance", 1)),
         scope_path=args.get("scope_path") or None,
+        scope=args.get("scope", "project"),
     )
     srv.project.memory.flush()
     srv._on_store()
@@ -397,7 +406,7 @@ def _h_search(srv: CairnMCPServer, args: dict) -> str:
 
 
 def _h_invalidate(srv: CairnMCPServer, args: dict) -> str:
-    ok = srv.project.memory.invalidate(int(args["id"]), reason=args.get("reason", ""))
+    ok = srv.project.memory.invalidate(args["id"], reason=args.get("reason", ""))
     return "invalidated" if ok else "not found or already invalid"
 
 
@@ -421,41 +430,27 @@ def _h_status(srv: CairnMCPServer, _args: dict) -> str:
     return "\n".join(out)
 
 
-def _h_list_skills(srv: CairnMCPServer, _args: dict) -> str:
-    return json.dumps(srv.project.list_skills(), ensure_ascii=False, indent=2)
-
-
-def _h_get_skill(srv: CairnMCPServer, args: dict) -> str:
-    return srv.project.get_skill(args["alias_or_name"]) or "(not found)"
-
-
-def _h_list_workflows(srv: CairnMCPServer, _args: dict) -> str:
-    return json.dumps(srv.project.list_workflows(), ensure_ascii=False, indent=2)
-
-
-def _h_get_workflow(srv: CairnMCPServer, args: dict) -> str:
-    return srv.project.get_workflow(args["name"]) or "(not found)"
-
-
-def _h_list_agents(srv: CairnMCPServer, _args: dict) -> str:
-    return json.dumps(srv.project.list_agents(), ensure_ascii=False, indent=2)
-
-
-def _h_get_agent(srv: CairnMCPServer, args: dict) -> str:
-    return srv.project.get_agent(args["name"]) or "(not found)"
+def _h_check_approach(srv: CairnMCPServer, args: dict) -> str:
+    rows = srv.project.memory.check_rejected(args.get("approach", ""), limit=int(args.get("limit", 5)))
+    return json.dumps(rows, ensure_ascii=False, indent=2) if rows else "(no rejected or abandoned match found)"
 
 
 def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
-    supersedes = int(args["supersedes"]) if args.get("supersedes") is not None else None
+    supersedes = args.get("supersedes")
+    if supersedes is not None:
+        supersedes = str(supersedes) if supersedes else None
     warning = None
     if supersedes is not None:
-        from cairn.memory.memory import sqlite_connect
-        with sqlite_connect(srv.project.memory.db_path) as conn:
-            row = conn.execute(
-                "SELECT id FROM memories WHERE id=? AND valid_until IS NULL", (supersedes,)
-            ).fetchone()
-        if not row:
+        prior = srv.project.memory.get_full(supersedes)
+        if not prior or prior.get("valid_until"):
             warning = f"supersedes id {supersedes} not found or already invalidated"
+
+    # Opt-in (memory.conflict.enabled, default false): check against prior
+    # decisions *before* inserting the new one. No-op, zero LLM calls, when
+    # disabled, see Memory.check_conflicts / conflict.py.
+    conflicts = srv.project.memory.check_conflicts(
+        args["decision"], args.get("reasoning") or ""
+    )
 
     new_id = srv.project.memory.record_decision(
         decision=args["decision"],
@@ -466,40 +461,47 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
         chose_because=args.get("chose_because") or None,
         importance=int(args.get("importance", 2)),
         scope_path=args.get("scope_path") or None,
+        scope=args.get("scope", "project"),
     )
     res = {"id": new_id, "kind": "decision"}
     if warning:
         res["warning"] = warning
+    if conflicts:
+        res["conflicts"] = conflicts
     return json.dumps(res, ensure_ascii=False)
 
 
 def _h_memory_get(srv: CairnMCPServer, args: dict) -> str:
-    full = srv.project.memory.get_full(int(args["id"]))
+    full = srv.project.memory.get_full(args["id"])
     return json.dumps(full, ensure_ascii=False, indent=2) if full else "(not found)"
 
 
 def _h_memory_thread(srv: CairnMCPServer, args: dict) -> str:
     target: int | str
     if args.get("id") is not None:
-        target = int(args["id"])
+        raw = args["id"]
+        target = raw if isinstance(raw, str) and raw.startswith("g") else int(raw)
     elif args.get("topic") is not None:
         target = str(args["topic"])
     elif args.get("topic_or_id") is not None:
         raw = args["topic_or_id"]
-        try:
-            target = int(raw)
-        except (ValueError, TypeError):
-            target = str(raw)
+        if isinstance(raw, str) and raw.startswith("g") and raw[1:].isdigit():
+            target = raw
+        else:
+            try:
+                target = int(raw)
+            except (ValueError, TypeError):
+                target = str(raw)
     else:
         return json.dumps({"error": "Missing parameter: 'id' or 'topic' is required"}, ensure_ascii=False)
-        
+
     rows = srv.project.memory.thread(target, limit=int(args.get("limit", 20)))
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
 
 def _h_decision_audit_score(srv: CairnMCPServer, args: dict) -> str:
     return json.dumps(
-        srv.project.memory.decision_audit_score(int(args["id"])),
+        srv.project.memory.decision_audit_score(args["id"]),
         ensure_ascii=False, indent=2,
     )
 
@@ -512,12 +514,7 @@ _TOOL_HANDLERS = {
     "memory_invalidate": _h_invalidate,
     "memory_boot": _h_boot,
     "memory_status": _h_status,
-    "list_skills": _h_list_skills,
-    "get_skill": _h_get_skill,
-    "list_workflows": _h_list_workflows,
-    "get_workflow": _h_get_workflow,
-    "list_agents": _h_list_agents,
-    "get_agent": _h_get_agent,
+    "check_approach": _h_check_approach,
     "record_decision": _h_record_decision,
     "memory_get": _h_memory_get,
     "memory_thread": _h_memory_thread,

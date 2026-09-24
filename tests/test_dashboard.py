@@ -17,7 +17,11 @@ from cairn.memory.memory import Memory
 def populated_db():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         db = Path(td) / "mem.db"
-        m = Memory({"memory": {"db_path": str(db), "async_store": False}})
+        m = Memory({"memory": {
+            "db_path": str(db),
+            "async_store": False,
+            "global_db_path": str(Path(td) / "global.db"),
+        }})
         a = m.record_decision(
             "Use SQLite for local dev",
             reasoning="No infra to manage",
@@ -86,6 +90,18 @@ def test_render_html_uses_cdn_assets(populated_db):
     html = render_dashboard_html(collect_dashboard_data(db))
     assert "tailwindcss.com" in html
     assert "chart.js" in html.lower()
+    assert "d3@7" in html  # force-directed decision graph
+
+
+def test_render_html_includes_graph_and_toggle(populated_db):
+    db, _, _ = populated_db
+    html = render_dashboard_html(collect_dashboard_data(db))
+    assert 'id="graphSvg"' in html
+    assert 'id="viewGraphBtn"' in html
+    assert 'id="viewCardsBtn"' in html
+    assert "forceSimulation" in html
+    assert "scopeTabs" in html
+    assert "This Project" in html
 
 
 def test_write_dashboard_creates_file(populated_db, tmp_path):
@@ -113,3 +129,77 @@ def test_unknown_filter_defaults_to_all(populated_db):
     data = collect_dashboard_data(db, filt="garbage")
     assert data["filter"] == "all"
     assert len(data["decisions"]) == 2
+
+
+def test_collect_embeds_other_projects_passthrough(populated_db):
+    db, _, _ = populated_db
+    others = [{"name": "sibling", "path": "/tmp/sibling", "last_seen": "x", "dashboard_uri": None}]
+    data = collect_dashboard_data(db, filt="all", other_projects=others)
+    assert data["other_projects"] == others
+
+
+def test_collect_defaults_other_projects_to_empty_list(populated_db):
+    db, _, _ = populated_db
+    data = collect_dashboard_data(db, filt="all")
+    assert data["other_projects"] == []
+
+
+def test_write_dashboard_registers_project_and_links_siblings(tmp_path, monkeypatch):
+    project_a = tmp_path / "project_a"
+    project_b = tmp_path / "project_b"
+    project_a.mkdir()
+    project_b.mkdir()
+    registry_path = tmp_path / "registry.json"
+
+    fake_config = {
+        "memory": {
+            "db_path": str(project_a / "mem.db"),
+            "global_enabled": False,
+            "registry_path": str(registry_path),
+        }
+    }
+    import cairn.config.loader as loader_module
+    monkeypatch.setattr(loader_module, "load_config", lambda *a, **k: fake_config)
+
+    from cairn.config.registry import register_project
+    from cairn.interface.commands.dashboard import write_dashboard
+
+    register_project(project_b, registry_path)  # simulate a sibling project seen before
+    out = write_dashboard(project_a)
+    html = out.read_text(encoding="utf-8")
+
+    assert "project_b" in html
+    assert list_projects_names(registry_path) == {"project_a", "project_b"}
+
+
+def list_projects_names(registry_path: Path) -> set[str]:
+    from cairn.config.registry import list_projects
+    return {p["name"] for p in list_projects(registry_path)}
+
+
+def test_collect_merges_global_decisions_with_g_prefix(populated_db):
+    db, a, b = populated_db
+    global_db = db.parent / "global.db"
+    m = Memory({"memory": {
+        "db_path": str(db),
+        "async_store": False,
+        "global_db_path": str(global_db),
+    }})
+    g_id = m.record_decision(
+        "Always use TypeScript", reasoning="team preference", scope="global"
+    )
+    data = collect_dashboard_data(db, filt="all", global_db_path=global_db)
+    scopes = {d["id"]: d["scope"] for d in data["decisions"]}
+    assert scopes[a] == "project"
+    assert scopes[b] == "project"
+    assert scopes[str(g_id)] == "global"
+    assert data["has_global"] is True
+    assert data["global_active_count"] == 1
+    assert data["project_active_count"] == 1
+
+
+def test_collect_without_global_db_path_has_no_global_scope(populated_db):
+    db, _, _ = populated_db
+    data = collect_dashboard_data(db, filt="all")
+    assert data["has_global"] is False
+    assert all(d["scope"] == "project" for d in data["decisions"])

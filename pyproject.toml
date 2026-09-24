@@ -38,9 +38,6 @@ cairn = "cairn.interface.cli:main"
 where = ["."]
 include = ["cairn*"]
 
-[tool.setuptools.package-data]
-"cairn" = ["agents/**/*.md", "workflows/**/*.md", "skills/**/*.md"]
-
 [tool.ruff]
 line-length = 100
 target-version = "py310"

@@ -1,4 +1,4 @@
-"""Config loader v0.4, memory-focused, no router/cost section."""
+"""Config loader v0.4: memory-focused, no router/cost section."""
 from __future__ import annotations
 
 import copy
@@ -15,6 +15,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "backend": "sqlite",
         "max_results": 5,
         "db_path": "~/.cairn/memory.db",
+        "global_enabled": True,
+        "global_db_path": "~/.cairn/global.db",
+        "registry_path": "~/.cairn/projects.json",
+        "redact": {"enabled": True, "extra_patterns": []},
         "async_store": True,
         "sliding_window": 10,
         "recency_boost": 1.5,

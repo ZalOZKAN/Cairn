@@ -163,10 +163,11 @@ def memory_search(
         results_found = True
         table = Table(title=f"SQLite: '{query}'", box=box.ROUNDED)
         table.add_column("Time", style="dim", width=20)
+        table.add_column("Scope", style="magenta", width=7)
         table.add_column("Prompt", style="cyan")
         table.add_column("Response", style="white")
         for r in db_results:
-            table.add_row(r["timestamp"][:19], r["prompt"][:60], r["response"][:80])
+            table.add_row(r["timestamp"][:19], r.get("scope", "project"), r["prompt"][:60], r["response"][:80])
         console.print(table)
 
     for fname in session_mgr.list_memory_files():
@@ -180,6 +181,32 @@ def memory_search(
 
     if not results_found:
         console.print(f"[yellow]No results found for '{query}'.[/yellow]")
+
+
+@memory_app.command("check")
+def memory_check(
+    approach: str = typer.Argument(..., help="The approach being considered"),
+    limit: int = typer.Option(5, "--limit", "-n"),
+):
+    """Check whether an approach was already rejected or abandoned."""
+    from cairn.core import Agent
+
+    agent = Agent()
+    rows = agent.memory.check_rejected(approach, limit=limit)
+
+    if not rows:
+        console.print("[green]No record of this being tried before.[/green]")
+        return
+
+    table = Table(title=f"Prior history: '{approach}'", box=box.ROUNDED)
+    table.add_column("Scope", style="magenta", width=7)
+    table.add_column("Kind", style="yellow")
+    table.add_column("Decision #", style="cyan")
+    table.add_column("Reason", style="white")
+    for r in rows:
+        kind = "rejected alt" if r["kind"] == "rejected_alternative" else "abandoned"
+        table.add_row(r["scope"], kind, str(r["decision_id"]), r["reason"] or "[dim]-[/dim]")
+    console.print(table)
 
 
 @memory_app.command("recent")
@@ -206,7 +233,7 @@ def memory_recent(
 
 @memory_app.command("invalidate")
 def memory_invalidate(
-    mem_id: int = typer.Argument(..., help="ID of the record to invalidate"),
+    mem_id: str = typer.Argument(..., help="ID of the record to invalidate ('g<n>' for a global entry)"),
     reason: str = typer.Option("", "--reason", "-r", help="Reason (optional)"),
 ):
     """Invalidate a memory record (does not delete; sets valid_until)."""

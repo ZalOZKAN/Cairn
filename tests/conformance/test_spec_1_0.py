@@ -28,7 +28,11 @@ def fresh_cairn_folder() -> Path:
         persistence.mkdir(parents=True)
         db_path = persistence / "memory.db"
 
-        mem = Memory({"memory": {"db_path": str(db_path), "async_store": False}})
+        mem = Memory({"memory": {
+            "db_path": str(db_path),
+            "async_store": False,
+            "global_db_path": str(persistence / "global.db"),
+        }})
 
         # Seed: one plain memory, one decision with full provenance, one
         # superseded chain so spec readers have something to walk.

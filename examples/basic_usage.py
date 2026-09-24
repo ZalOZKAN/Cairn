@@ -24,7 +24,11 @@ def main() -> None:
         print("=" * 50)
         print("1. Store + recall through the Memory layer")
         print("=" * 50)
-        memory = Memory({"memory": {"db_path": db_path, "async_store": False}})
+        memory = Memory({"memory": {
+            "db_path": db_path,
+            "async_store": False,
+            "global_db_path": str(Path(tmp) / "global.db"),
+        }})
         memory.store(
             "JWT storage decision",
             "Use httpOnly cookies for JWT, not localStorage. XSS exfiltration risk.",
@@ -47,15 +51,20 @@ def main() -> None:
         print(f"  Recall after invalidate: {recall_again[:200]}\n")
 
         print("=" * 50)
-        print("3. Project facade (skills + workflows)")
+        print("3. check_rejected, has this approach already been tried?")
         print("=" * 50)
-        project = Project()
-        skills = project.list_skills()
-        print(f"  Skills available: {len(skills)}")
-        for s in skills[:5]:
-            print(f"    - {s.get('alias') or s.get('name')}")
-        workflows = project.list_workflows()
-        print(f"  Workflows available: {len(workflows)}, first 5: {workflows[:5]}")
+        rejects = memory.check_rejected("store the auth token in localStorage")
+        if rejects:
+            print(f"  Found {len(rejects)} prior rejection(s): {rejects[0]['reason']}")
+        else:
+            print("  No record of this being tried before.")
+
+        print("=" * 50)
+        print("4. Project facade, config + memory in one object")
+        print("=" * 50)
+        project = Project(load_session=False)
+        print(f"  memory_helper_model: {project.config.get('memory_helper_model')}")
+        print("  project.memory is the same Memory class used above")
 
 
 if __name__ == "__main__":

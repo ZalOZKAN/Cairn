@@ -86,6 +86,7 @@ def _run(decay_enabled: bool) -> tuple[float, list[tuple[str, bool]]]:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         cfg = load_config()
         cfg["memory"]["db_path"] = f"{td}/bench.db"
+        cfg["memory"]["global_db_path"] = f"{td}/global.db"
         cfg["memory"]["async_store"] = False
         cfg["memory"]["dedup"] = {"enabled": False}
         cfg["memory"]["decay"] = {"enabled": decay_enabled, "half_life_days": 30}

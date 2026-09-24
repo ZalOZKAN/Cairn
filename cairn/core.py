@@ -1,21 +1,17 @@
 """
 Cairn core, Project facade.
 
-Cairn is NOT an LLM runtime in v0.4. It is a portable `.cairn/`
-folder that any AI coding agent (Claude Code, Cursor, Antigravity, custom
-CLI) can read from and write to. The `Project` class is a thin convenience
-wrapper that:
+Cairn is NOT an LLM runtime. It is a portable `.cairn/` folder that any AI
+coding agent (Claude Code, Cursor, Antigravity, custom CLI) can read from
+and write to. The `Project` class is a thin convenience wrapper that:
 
 - loads `.cairn/config.yaml` (or falls back to defaults),
 - exposes the `Memory` instance,
-- lists skills / agents / workflows shipped with the package or overridden
-  by the project,
 - gives a single `helper_call(prompt, system)` for the few features that
   legitimately need a small LLM (extractor, manifest generation, conflict
   detection, summarization). The helper model is configurable.
 
-That is the entire runtime surface. Everything else lives in markdown files
-that travel with the project.
+That is the entire runtime surface.
 """
 from __future__ import annotations
 
@@ -26,7 +22,6 @@ from cairn.config.loader import load_config
 from cairn.memory.memory import Memory
 from cairn.memory.session import SessionManager
 from cairn.memory.injector import ContextInjector
-from cairn.skills.registry import SkillRegistry
 from cairn.security.guard import SecurityGuard
 
 
@@ -47,7 +42,6 @@ class Project:
                 config_path = candidate
         self.config: dict[str, Any] = load_config(config_path)
         self.memory = Memory(self.config)
-        self.skills = SkillRegistry(self.config)
         self.security = SecurityGuard(self.config)
         self.session = SessionManager(self.project_dir)
         self.injector = ContextInjector(self.project_dir)
@@ -76,27 +70,6 @@ class Project:
         except Exception:
             return None
 
-    # ---- skills/agents/workflows: read-only file format ----------------
-
-    def list_skills(self) -> list[dict]:
-        return self.skills.list_skills()
-
-    def get_skill(self, alias_or_name: str) -> str | None:
-        return self.skills.load(alias_or_name)
-
-    def list_agents(self) -> list[str]:
-        return _list_md(_pkg_dir("agents"), self.project_dir / ".cairn" / "agents")
-
-    def get_agent(self, name: str) -> str | None:
-        return _read_md(name, _pkg_dir("agents"), self.project_dir / ".cairn" / "agents")
-
-    def list_workflows(self) -> list[str]:
-        return _list_md(_pkg_dir("workflows"), self.project_dir / ".cairn" / "workflows")
-
-    def get_workflow(self, name: str) -> str | None:
-        name = name.lstrip("/")
-        return _read_md(name, _pkg_dir("workflows"), self.project_dir / ".cairn" / "workflows")
-
     # ---- lifecycle ----------------------------------------------------
 
     def close(self) -> None:
@@ -104,28 +77,5 @@ class Project:
 
 
 # Backwards-compatible alias, older code did `from cairn import Agent`.
-# The class is no longer an LLM runtime; it's a memory + file-format facade.
+# The class is no longer an LLM runtime; it's a memory facade.
 Agent = Project
-
-
-# --------------------------- helpers ---------------------------------
-
-def _pkg_dir(name: str) -> Path:
-    return Path(__file__).parent / name
-
-
-def _list_md(*dirs: Path) -> list[str]:
-    names: dict[str, None] = {}
-    for d in dirs:
-        if d.exists():
-            for p in sorted(d.glob("*.md")):
-                names[p.stem] = None
-    return list(names.keys())
-
-
-def _read_md(name: str, *dirs: Path) -> str | None:
-    for d in dirs:
-        p = d / f"{name}.md"
-        if p.exists():
-            return p.read_text(encoding="utf-8")
-    return None

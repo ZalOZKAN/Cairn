@@ -20,3 +20,7 @@ CHANGELOG.md
 
 # Per-machine Claude Code settings (personal paths, allowlists)
 .claude/settings.local.json
+
+# Downloaded external benchmark datasets (LoCoMo is CC BY-NC, never vendor
+# it into this MIT repo; fetched on demand by scripts/download_benchmark_data.py)
+.bench_cache/

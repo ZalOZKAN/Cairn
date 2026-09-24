@@ -33,6 +33,7 @@ def test_memory_store_and_recall():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         config = load_config()
         config["memory"]["db_path"] = f"{tmpdir}/test.db"
+        config["memory"]["global_db_path"] = f"{tmpdir}/global.db"
         config["memory"]["async_store"] = False
         memory = Memory(config)
         memory.store("what is jwt authentication", "JWT is a token format used for stateless auth")
@@ -44,6 +45,7 @@ def test_memory_search():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         config = load_config()
         config["memory"]["db_path"] = f"{tmpdir}/test.db"
+        config["memory"]["global_db_path"] = f"{tmpdir}/global.db"
         config["memory"]["async_store"] = False
         memory = Memory(config)
         memory.store("python async patterns", "Use asyncio for concurrent tasks")
@@ -56,6 +58,7 @@ def test_memory_clear():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         config = load_config()
         config["memory"]["db_path"] = f"{tmpdir}/test.db"
+        config["memory"]["global_db_path"] = f"{tmpdir}/global.db"
         config["memory"]["async_store"] = False
         memory = Memory(config)
         memory.store("test prompt", "test response")

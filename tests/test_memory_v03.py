@@ -14,6 +14,10 @@ from cairn.memory.decay import decayed_score, days_old
 def _mk_memory(tmpdir: str, **overrides) -> Memory:
     config = load_config()
     config["memory"]["db_path"] = f"{tmpdir}/test.db"
+    # Isolate global memory to the temp dir too, never touch the real
+    # ~/.cairn/global.db while running tests.
+    config["memory"]["global_db_path"] = overrides.pop("global_db_path", f"{tmpdir}/global.db")
+    config["memory"]["global_enabled"] = overrides.pop("global_enabled", True)
     config["memory"].setdefault("dedup", {})["enabled"] = overrides.pop("dedup", True)
     config["memory"]["async_store"] = overrides.pop("async_store", False)
     config["memory"]["backend"] = overrides.pop("backend", "sqlite")

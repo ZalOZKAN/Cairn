@@ -19,10 +19,9 @@ pytest tests/   # confirm the tests pass
 
 **Wanted:**
 - Bug fixes
-- New skills (`skills/<skill-name>/SKILL.md`)
-- New workflows (`workflows/<name>.md`)
 - Test coverage improvements
 - Documentation improvements
+- Host integration reports (`INTEGRATIONS.md`)
 
 **Let's discuss first:**
 - New CLI commands
@@ -101,37 +100,6 @@ Types: `feat` `fix` `docs` `test` `chore` `refactor` `perf`
 
 ---
 
-## Adding a skill (easiest contribution)
-
-You don't need to know Python to add a new skill:
-
-```bash
-mkdir -p skills/my-skill
-cat > skills/my-skill/SKILL.md << 'EOF'
-# @my-skill, Skill description
-
-You are an expert in...
-
-## What you do
-...
-
-## Output format
-...
-EOF
-```
-
-Then add an alias in `cairn/skills/registry.py`:
-```python
-SKILL_ALIASES: dict[str, str] = {
-    ...
-    "@ms": "my-skill",
-}
-```
-
-Open a PR; once CI passes it gets merged.
-
----
-
 ## Security
 
 **If you find a vulnerability:**
@@ -157,7 +125,7 @@ For a PR to be merged:
 | CI passes | `pytest` and `ruff` are green |
 | Tests present | A test exists for the new code |
 | Security | No hardcoded API keys; input is validated |
-| No breaking change | Or if there is one, it's noted in CHANGELOG |
+| No breaking change | Or if there is one, it's called out clearly in the PR description |
 | Dependencies | Fewer new dependencies is better |
 
 ---

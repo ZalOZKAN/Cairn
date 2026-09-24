@@ -31,7 +31,11 @@ from cairn.memory.memory import Memory
 def main() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         db_path = Path(td) / "memory.db"
-        mem = Memory({"memory": {"db_path": str(db_path), "async_store": False}})
+        mem = Memory({"memory": {
+            "db_path": str(db_path),
+            "async_store": False,
+            "global_db_path": str(Path(td) / "global.db"),
+        }})
 
         # 1. First decision, fully provenanced.
         first = mem.record_decision(

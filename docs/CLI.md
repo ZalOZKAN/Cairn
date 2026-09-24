@@ -6,7 +6,7 @@ This document provides a complete reference for the `cairn` command-line interfa
 
 ### `cairn init`
 Initialize Cairn in the current project directory.
-- **What it does:** Creates the `.cairn/` configuration and directory structures (skills, agents, workflows, persistence) and generates a default `config.yaml` and `SYSTEM.md`.
+- **What it does:** Creates the `.cairn/` configuration and persistence directory structure and generates a default `config.yaml` and `SYSTEM.md`.
 - **Options:**
   - `--name, -n <text>`: Custom project name (defaults to directory name).
   - `--profile, -p [cloud|local]`: Helper model profile (default: `cloud`). `cloud` configures the Groq API; `local` configures a local Ollama server (`qwen2.5:3b`) so the helper model never leaves the machine. See `profiles/local_first.yaml` for the underlying template.
@@ -40,11 +40,19 @@ Create, regenerate, or show the project context manifest (`context-manifest.md`)
   - `--regen`: Force regeneration of the manifest file by scanning files in the project.
 
 ### `cairn memory search <query>`
-Search for keywords or substrings across both the SQLite database and session memory files.
+Search for keywords or substrings across both the SQLite database and session memory files. Results include matches from `~/.cairn/global.db` (cross-project memory) when `memory.global_enabled` is true, the results table's `Scope` column shows `project` or `global`.
 - **Arguments:**
   - `query` (Required): Search term.
 - **Options:**
   - `--limit, -n <int>`: Max results to return (default: `5`).
+  - `--path, -p <path>`: Scope results to a workspace-relative path (e.g. `apps/api`); repo-wide entries still match.
+
+### `cairn memory check <approach>`
+Check whether an approach was already tried and rejected (a decision's rejected alternative) or abandoned (a decision later invalidated/superseded). Read-only, no LLM call, checks project + global DBs.
+- **Arguments:**
+  - `approach` (Required): The approach being considered, in a sentence or two.
+- **Options:**
+  - `--limit, -n <int>`: Max matches to return (default: `5`).
 
 ### `cairn memory recent`
 Show a table of the most recent memory entries recorded in the SQLite database.
@@ -54,7 +62,7 @@ Show a table of the most recent memory entries recorded in the SQLite database.
 ### `cairn memory invalidate <id>`
 Invalidate a memory record (e.g. fact or decision) by its row ID, hiding it from recall.
 - **Arguments:**
-  - `id` (Required): Database row ID.
+  - `id` (Required): Database row ID, a plain number for a project entry, or `g<n>` (e.g. `g7`) for a global entry.
 - **Options:**
   - `--reason, -r <text>`: Optional rationale for why the decision or fact is no longer valid.
 
@@ -80,4 +88,9 @@ Delete all SQLite memory entries. Requires confirmation unless bypassed.
 Start the Cairn stdio MCP server. This is the command that MCP hosts (like Claude Code, Cursor) execute in the background to access your project's memory.
 
 ### `cairn mcp config`
-Print recommended MCP client configurations for Claude Desktop, Claude Code, Cursor, and Continue.
+Print an MCP client config snippet for the chosen host, plus the live list of available tools (so the count can never go stale).
+- **Options:**
+  - `--host, -h <name>`: `claude-code` | `cursor` | `antigravity` | `codex` | `opencode` | `windsurf` | `zed` | `generic` (default: `claude-code`).
+  - `--with-hooks`: also print an opt-in SessionStart hook recipe (runs `cairn memory boot` automatically at session start). Doc-only, never writes to any config file. Currently verified for `claude-code` only; other hosts print an explicit "not yet verified" note rather than guessed syntax.
+- **Format note:** most hosts use JSON (`mcpServers` block); `codex` uses TOML (`[mcp_servers.cairn]` in `config.toml`), the command emits the correct format per host, it does not always print JSON.
+- **Claude Code note:** the printed instructions point at `claude mcp add` / `.mcp.json` / `~/.claude.json`, not `claude_desktop_config.json`, which is Claude *Desktop*'s file, a different app.

@@ -1,4 +1,4 @@
-"""cairn init, initialize a project."""
+"""cairn init: initialize a project."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +8,7 @@ from rich.console import Console
 console = Console()
 
 CLOUD_CONFIG_TEMPLATE = """\
-# Cairn config, drop this in any project's .cairn/ folder.
+# Cairn config: drop this in any project's .cairn/ folder.
 # Docs: https://github.com/yourusername/cairn
 # Profile: cloud (default). For a fully local/offline helper model, run
 # `cairn init --profile local` instead (requires Ollama).
@@ -18,6 +18,10 @@ memory:
   backend: sqlite        # or "hybrid" for SQLite + ChromaDB semantic search
   async_store: true
   sliding_window: 10
+  global_enabled: true   # merge in ~/.cairn/global.db (cross-project prefs/facts)
+  redact:
+    enabled: true         # best-effort secret masking before anything is written
+    extra_patterns: []    # [[regex, replacement], ...] for project-specific secret formats
   decay:
     enabled: true
     half_life_days: 30
@@ -33,9 +37,9 @@ memory_helper_model: groq/llama-3.3-70b-versatile
 """
 
 LOCAL_CONFIG_TEMPLATE = """\
-# Cairn config, drop this in any project's .cairn/ folder.
+# Cairn config: drop this in any project's .cairn/ folder.
 # Docs: https://github.com/yourusername/cairn
-# Profile: local. Nothing leaves the machine, the helper model runs
+# Profile: local. Nothing leaves the machine: the helper model runs
 # through a local Ollama server instead of a cloud API.
 
 memory:
@@ -43,6 +47,10 @@ memory:
   backend: sqlite        # or "hybrid" for SQLite + ChromaDB semantic search
   async_store: true
   sliding_window: 10
+  global_enabled: true   # merge in ~/.cairn/global.db (cross-project prefs/facts)
+  redact:
+    enabled: true         # best-effort secret masking before anything is written
+    extra_patterns: []    # [[regex, replacement], ...] for project-specific secret formats
   decay:
     enabled: true
     half_life_days: 30
@@ -63,7 +71,7 @@ PROFILE_TEMPLATES = {
 }
 
 SYSTEM_MD_TEMPLATE = """\
-# {project_name}, project context
+# {project_name}: project context
 
 Fill this with the long-lived facts about your project: stack, key
 architecture decisions, naming conventions, deploy targets, gotchas.
@@ -106,11 +114,8 @@ def init_cmd(
         console.print("[yellow].cairn/ already exists in this directory.[/yellow]")
         return
 
-    (cairn_dir / "skills").mkdir(parents=True)
-    (cairn_dir / "workflows").mkdir(parents=True)
     (cairn_dir / "memory").mkdir(parents=True)
     (cairn_dir / "persistence" / "memory").mkdir(parents=True)
-    (cairn_dir / "agents").mkdir(parents=True)
 
     # config.yaml
     config_path = cairn_dir / "config.yaml"
@@ -127,6 +132,9 @@ def init_cmd(
     # .gitignore
     gitignore = cairn_dir / ".gitignore"
     gitignore.write_text("memory/\n*.db\n*.jsonl\n", encoding="utf-8")
+
+    from cairn.config.registry import register_project
+    register_project(Path.cwd(), Path("~/.cairn/projects.json").expanduser())
 
     console.print("[green]Created .cairn/[/green]")
     console.print(f"  config      : {config_path}  [dim](profile: {profile})[/dim]")

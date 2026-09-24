@@ -21,7 +21,8 @@ Given a NEW memory entry and a list of PRIOR entries, identify any PRIOR entry w
 decision/fact directly contradicts the NEW one. Be strict: only flag direct contradictions
 (e.g. "use postgres" vs "use sqlite"), not topic overlap.
 
-Return strict JSON: {"conflicts": [{"id": <int>, "reason": "<one short sentence>"}]}
+Return strict JSON: {"conflicts": [{"id": <id from the PRIOR list, exactly as shown, a plain
+number or a "g<number>" string>, "reason": "<one short sentence>"}]}
 If none, return {"conflicts": []}."""
 
 
@@ -61,19 +62,29 @@ class ConflictDetector:
         except Exception:
             return []
 
-    def _candidates(self, memory: "Memory") -> list[tuple[int, str, str]]:
+    def _candidates(self, memory: "Memory") -> list[tuple[int | str, str, str]]:
+        """Recent high-importance rows from the project DB, plus the global
+        DB (tagged "g<id>") when global memory is enabled, a contradiction
+        can be against a cross-project preference just as much as a local one."""
         from cairn.memory.memory import sqlite_connect
-        with sqlite_connect(memory.db_path) as conn:
-            rows = conn.execute(
-                "SELECT id, prompt, response FROM memories "
-                "WHERE valid_until IS NULL AND importance >= ? "
-                "ORDER BY id DESC LIMIT ?",
-                (self.min_importance, self.scan_limit),
-            ).fetchall()
-        return [(r[0], r[1], r[2]) for r in rows]
+
+        def _scan(db_path) -> list[tuple[int, str, str]]:
+            with sqlite_connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT id, prompt, response FROM memories "
+                    "WHERE valid_until IS NULL AND importance >= ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (self.min_importance, self.scan_limit),
+                ).fetchall()
+            return [(r[0], r[1], r[2]) for r in rows]
+
+        out: list[tuple[int | str, str, str]] = list(_scan(memory.db_path))
+        if getattr(memory, "global_enabled", False):
+            out.extend((f"g{rid}", p, r) for rid, p, r in _scan(memory.global_db_path))
+        return out
 
     @staticmethod
-    def _format_user(new_prompt: str, new_response: str, priors: list[tuple[int, str, str]]) -> str:
+    def _format_user(new_prompt: str, new_response: str, priors: list[tuple[int | str, str, str]]) -> str:
         lines = [f"NEW:\nQ: {new_prompt}\nA: {new_response[:400]}\n\nPRIOR:"]
         for rid, p, r in priors:
             lines.append(f"[{rid}] Q: {p[:120]} / A: {r[:200]}")
@@ -91,7 +102,10 @@ class ConflictDetector:
             for c in data.get("conflicts", []):
                 rid = c.get("id")
                 reason = c.get("reason", "")
-                if isinstance(rid, int):
+                if isinstance(rid, str) and rid.isdigit():
+                    rid = int(rid)
+                is_global_id = isinstance(rid, str) and rid.startswith("g") and rid[1:].isdigit()
+                if isinstance(rid, int) or is_global_id:
                     out.append({"id": rid, "reason": reason})
             return out
         except (json.JSONDecodeError, AttributeError, TypeError):
