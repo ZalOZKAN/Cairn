@@ -33,6 +33,10 @@ Below: what to paste *where*, plus any host-specific gotchas.
   hook, not `"mcp_tool"`, Claude Code has a documented timing bug where
   `mcp_tool` SessionStart hooks can fire before the MCP server connects and
   get silently skipped ([anthropics/claude-code#57932](https://github.com/anthropics/claude-code/issues/57932)).
+  The same recipe adds a `PreToolUse` hook on `Edit|Write|MultiEdit` that runs
+  `cairn memory for-path --hook`: before Claude edits a file, the decisions
+  scoped to that file's directory are injected as `additionalContext`. It
+  prints nothing when no decision applies, so it costs nothing on most edits.
 - **Verified versions:** not yet verified
 - **Known quirks:** none yet.
 

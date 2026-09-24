@@ -41,6 +41,8 @@ from pathlib import Path
 from typing import Any
 
 from cairn import __version__
+from cairn.memory.decision_files import format_brief
+from cairn.memory.injector import AGENT_GUIDE
 
 
 class CairnMCPServer:
@@ -200,6 +202,7 @@ class CairnMCPServer:
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "cairn", "version": __version__},
+                "instructions": AGENT_GUIDE,
             })
         if method == "notifications/initialized":
             return None
@@ -329,6 +332,13 @@ class CairnMCPServer:
                   {"approach": _str("The approach being considered, in a sentence or two"),
                    "limit": _int("Max matches to return", default=5)},
                   required=["approach"]),
+            _tool("decisions_for_path",
+                  "Call this BEFORE editing or creating a file. Returns the active decisions "
+                  "that apply to that file's directory (e.g. 'API handlers use SQLAlchemy core, "
+                  "not the ORM'), flagged NEEDS REVIEW when the code has changed a lot since. "
+                  "Follow them, or ask the user before going against one. Cheap: no LLM call.",
+                  {"path": _str("File or directory path, absolute or relative to the project root")},
+                  required=["path"]),
             _tool("memory_get",
                   "Full record for a memory id: reasoning, alternatives, evidence, supersedes chain.",
                   {"id": _str("Memory row id, a plain number for a project entry, or "
@@ -413,7 +423,15 @@ def _h_invalidate(srv: CairnMCPServer, args: dict) -> str:
 def _h_boot(srv: CairnMCPServer, args: dict) -> str:
     fmt = args.get("format", "text")
     extras = args.get("include_memory") or []
-    return srv.project.injector.build(fmt=fmt, include_memory=extras or None) or "(empty)"
+    return srv.project.injector.build(
+        fmt=fmt, include_memory=extras or None, decisions=srv.project.memory.active_decisions()
+    ) or "(empty)"
+
+
+def _h_decisions_for_path(srv: CairnMCPServer, args: dict) -> str:
+    rows = srv.project.memory.decisions_for_path(args.get("path", ""))
+    return format_brief(rows, f"Decisions that apply to {args.get('path', '')}:") or \
+        "(no path-scoped decisions for this file)"
 
 
 def _h_status(srv: CairnMCPServer, _args: dict) -> str:
@@ -515,6 +533,7 @@ _TOOL_HANDLERS = {
     "memory_boot": _h_boot,
     "memory_status": _h_status,
     "check_approach": _h_check_approach,
+    "decisions_for_path": _h_decisions_for_path,
     "record_decision": _h_record_decision,
     "memory_get": _h_memory_get,
     "memory_thread": _h_memory_thread,

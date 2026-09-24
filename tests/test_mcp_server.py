@@ -60,7 +60,7 @@ def test_tools_list_method(srv):
     req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
     resp = srv._handle(req)
     assert "tools" in resp["result"]
-    assert len(resp["result"]["tools"]) == 13
+    assert len(resp["result"]["tools"]) == 14
 
 
 # --- memory tools end-to-end ---------------------------------------------

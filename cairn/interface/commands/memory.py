@@ -65,10 +65,12 @@ def memory_boot(
     memory: list[str] = typer.Option([], "--memory", "-m", help="Extra memory file"),
 ):
     """Start of session: generate boot context."""
+    from cairn.core import Project
     from cairn.memory.injector import ContextInjector
 
     injector = ContextInjector()
-    context = injector.build(fmt=fmt, include_memory=memory or None)
+    decisions = Project(load_session=False).memory.active_decisions()
+    context = injector.build(fmt=fmt, include_memory=memory or None, decisions=decisions)
     token_est = injector.estimate_tokens(fmt)
 
     if copy:
@@ -294,6 +296,43 @@ def memory_export():
     project = Project(load_session=False)
     counts = project.memory.sync_decision_files()
     console.print(f"[green]Decision files synced:[/green] {counts}")
+
+
+@memory_app.command("for-path")
+def memory_for_path(
+    path: str = typer.Argument("", help="File or directory (omit with --hook)"),
+    hook: bool = typer.Option(
+        False, "--hook",
+        help="Claude Code PreToolUse hook mode: read the hook JSON on stdin, print hook JSON",
+    ),
+):
+    """Show the active decisions that apply to a file."""
+    import json
+    import sys
+    from cairn.core import Project
+    from cairn.memory.decision_files import format_brief
+
+    project_dir = Path.cwd()
+    if hook:
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError:
+            return
+        path = ((payload.get("tool_input") or {}).get("file_path")) or ""
+        project_dir = Path(payload.get("cwd") or project_dir)
+        if not path or not (project_dir / ".cairn").is_dir():
+            return
+    project = Project(project_dir=project_dir, load_session=False)
+    rows = project.memory.decisions_for_path(path)
+    text = format_brief(rows, f"Cairn decisions that apply to {path}:")
+    if hook:
+        if text:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": text + "\nFollow these, or ask the user before going against one.",
+            }}))
+        return
+    console.print(text or f"[dim]No path-scoped decisions for {path}.[/dim]", markup=False)
 
 
 @memory_app.command("stale")

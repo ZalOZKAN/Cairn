@@ -32,8 +32,8 @@ cairn mcp config --host claude-code   # (or cursor, antigravity, codex, opencode
 ```
 
 Paste the printed config block into your IDE's MCP config, restart, and the
-agent gets thirteen memory tools: `memory_recall`, `memory_store`, `memory_invalidate`,
-`record_decision`, `memory_thread`, `decision_audit_score`, `check_approach`,
+agent gets fourteen memory tools: `memory_recall`, `memory_store`, `memory_invalidate`,
+`record_decision`, `decisions_for_path`, `memory_thread`, `check_approach`,
 and friends, without you writing a line of glue code.
 
 ![Claude Code demo](docs/demos/claude-code.gif)
@@ -230,7 +230,7 @@ cairn init --profile local              # same, but the helper model runs on a l
 # MCP server (what your IDE calls)
 cairn mcp serve                         # stdio JSON-RPC 2.0, Claude Code-compatible
 cairn mcp config --host claude-code     # print client config snippet
-cairn mcp config --host claude-code --with-hooks  # + opt-in SessionStart hook recipe (doc-only)
+cairn mcp config --host claude-code --with-hooks  # + opt-in SessionStart + PreToolUse hook recipe (doc-only)
 
 # Memory
 cairn memory boot                       # session boot context

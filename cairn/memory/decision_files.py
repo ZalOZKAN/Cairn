@@ -194,3 +194,18 @@ def adr_to_decision(text: str, source_name: str, today: datetime) -> dict[str, A
         "reasoning": reasoning, "alternatives": alternatives,
         "evidence": [{"source": "ADR", "claim": source_name}],
     }
+
+
+def format_brief(rows: list[dict], header: str) -> str:
+    """One line per decision; used in boot context, MCP output and hooks."""
+    if not rows:
+        return ""
+    lines = [header]
+    for r in rows:
+        where = f" [{r['path']}]" if r.get("path") else ""
+        flag = ""
+        if r.get("stale"):
+            flag = f" (NEEDS REVIEW: {r['stale']['commits_since']} commits since recorded)"
+        first = (r.get("decision") or "").strip().splitlines()[0] if r.get("decision") else ""
+        lines.append(f"- #{r['id']}{where}: {first}{flag}")
+    return "\n".join(lines)

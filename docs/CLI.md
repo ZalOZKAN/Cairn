@@ -75,6 +75,9 @@ Generate the project decision dashboard (interactive single-file HTML).
 ### `cairn memory export`
 Sync decisions with `.cairn/decisions/`, one Markdown file per decision. Files are the source of truth: new or hand-edited files are imported, decisions without a file are written out. This also runs automatically whenever Cairn opens a project, so you rarely need it by hand.
 
+### `cairn memory for-path <path>`
+Print the active decisions scoped to a file's directory (or its ancestors). With `--hook` it runs as a Claude Code `PreToolUse` hook: reads the hook JSON on stdin and prints `hookSpecificOutput.additionalContext`, or nothing when no decision applies. `cairn memory boot` now also lists active decisions (importance 2+).
+
 ### `cairn memory stale`
 List active decisions scoped to a path (`scope_path`) whose path has received at least `memory.stale.commits` commits (default 10) since the decision was recorded or last confirmed. Such decisions are also marked `NEEDS REVIEW` in recall output. Nothing is ever invalidated automatically. Repo-wide decisions and non-git projects are never flagged.
 

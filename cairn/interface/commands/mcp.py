@@ -45,7 +45,12 @@ _HOOK_SNIPPETS = {
         "hooks": {
             "SessionStart": [
                 {"hooks": [{"type": "command", "command": f"{cmd} memory boot"}]}
-            ]
+            ],
+            # Injects the decisions scoped to the file about to be edited.
+            "PreToolUse": [
+                {"matcher": "Edit|Write|MultiEdit",
+                 "hooks": [{"type": "command", "command": f"{cmd} memory for-path --hook"}]}
+            ],
         }
     }, indent=2),
 }

@@ -1035,6 +1035,50 @@ class Memory:
             return None
         return {"commits_since": n, "path": row[1], "threshold": self.stale_commits}
 
+    def _relative_to_project(self, path: str) -> str:
+        p = Path(path)
+        if p.is_absolute():
+            try:
+                p = p.resolve().relative_to(self.project_dir.resolve())
+            except ValueError:
+                return self._normalize_path(path)
+        return self._normalize_path(str(p))
+
+    def decisions_for_path(self, path: str, limit: int = 8) -> list[dict]:
+        """Active project decisions scoped to `path` or one of its ancestor
+        directories, most important first. Repo-wide decisions are left out
+        on purpose: they belong in the session boot summary, not on every edit."""
+        rel = self._relative_to_project(path)
+        if not rel:
+            return []
+        path_sql, params = self._path_filter_sql(rel)
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, uid, prompt, reasoning, scope_path, importance FROM memories "
+                "WHERE kind='decision' AND valid_until IS NULL AND scope_path IS NOT NULL"
+                + path_sql + " ORDER BY importance DESC, id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        return [
+            {"id": rid, "uid": uid, "decision": d, "reasoning": r, "path": sp,
+             "importance": imp, "stale": self.staleness(rid)}
+            for rid, uid, d, r, sp, imp in rows
+        ]
+
+    def active_decisions(self, min_importance: int = 2, limit: int = 15) -> list[dict]:
+        """Compact list of active project decisions for the session boot context."""
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, prompt, scope_path, importance FROM memories "
+                "WHERE kind='decision' AND valid_until IS NULL AND importance >= ? "
+                "ORDER BY importance DESC, id DESC LIMIT ?",
+                (min_importance, limit),
+            ).fetchall()
+        return [
+            {"id": rid, "decision": d, "path": sp, "importance": imp, "stale": self.staleness(rid)}
+            for rid, d, sp, imp in rows
+        ]
+
     def stale_decisions(self) -> list[dict]:
         with sqlite_connect(self.db_path) as conn:
             rows = conn.execute(

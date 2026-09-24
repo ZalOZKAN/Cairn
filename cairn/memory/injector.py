@@ -19,8 +19,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cairn.memory.session import SessionManager
 from cairn.memory.manifest import ManifestManager
+from cairn.memory.session import SessionManager
+
+AGENT_GUIDE = (
+    "Cairn keeps this project's decisions. Before proposing an approach, call "
+    "`check_approach`. Before editing a file, call `decisions_for_path` with it. "
+    "Whenever a choice between options is settled (library, pattern, data model, "
+    "API shape, trade-off), call `record_decision` with reasoning, the rejected "
+    "alternatives, and `scope_path` when it applies to one part of the repo. If "
+    "it replaces an earlier decision, pass `supersedes`."
+)
 
 
 class ContextInjector:
@@ -34,7 +43,12 @@ class ContextInjector:
         self.session_mgr = SessionManager(self.project_dir)
         self.manifest_mgr = ManifestManager(self.project_dir)
 
-    def build(self, fmt: str = "text", include_memory: list[str] | None = None) -> str:
+    def build(
+        self,
+        fmt: str = "text",
+        include_memory: list[str] | None = None,
+        decisions: list[dict] | None = None,
+    ) -> str:
         """
         Build the boot inject string.
 
@@ -48,8 +62,8 @@ class ContextInjector:
         if fmt == "claude":
             return self._build_claude_format()
         if fmt == "json":
-            return self._build_json_format(include_memory)
-        return self._build_text_format(include_memory)
+            return self._build_json_format(include_memory, decisions)
+        return self._build_text_format(include_memory, decisions)
 
     def estimate_tokens(self, fmt: str = "text") -> int:
         """Approximate token count."""
@@ -58,7 +72,7 @@ class ContextInjector:
 
     # ── Format builders ────────────────────────────────────────────────
 
-    def _build_text_format(self, include_memory: list[str] | None) -> str:
+    def _build_text_format(self, include_memory: list[str] | None, decisions: list[dict] | None = None) -> str:
         """Pasteable-into-any-AI format."""
         sections = []
 
@@ -88,6 +102,14 @@ class ContextInjector:
             sections.append(handoff)
             sections.append("")
 
+        if decisions:
+            from cairn.memory.decision_files import format_brief
+            sections.append(format_brief(
+                decisions,
+                "## Active decisions (do not contradict without asking; memory_get <id> for the why)",
+            ))
+            sections.append("")
+
         # L4: On-demand memory
         if include_memory:
             for fname in include_memory:
@@ -97,7 +119,7 @@ class ContextInjector:
 
         sections.append("---")
         sections.append("*Context loaded. Ready to continue.*")
-        sections.append("\n**REMINDER FOR THE AGENT:** Remember to call `record_decision` whenever an architectural or design decision is made during this session so that it is persistently stored and versioned.")
+        sections.append("\n**REMINDER FOR THE AGENT:** " + AGENT_GUIDE)
 
         return "\n".join(sections)
 
@@ -115,16 +137,17 @@ class ContextInjector:
             lines.append(f"@{persistence / 'session-handoff.md'}")
 
         lines.append("\nContinue from where we left off based on the above context.")
-        lines.append("Remember to call `record_decision` whenever an architectural or design decision is made during this session so that it is persistently stored and versioned.")
+        lines.append(AGENT_GUIDE)
         return "\n".join(lines)
 
-    def _build_json_format(self, include_memory: list[str] | None) -> str:
+    def _build_json_format(self, include_memory: list[str] | None, decisions: list[dict] | None = None) -> str:
         """JSON format, for SDK integration."""
         data = {
             "state": self.session_mgr.load_state(),
             "manifest": self.manifest_mgr.load(),
             "handoff": self.session_mgr.load_handoff(),
             "memory": {},
+            "decisions": decisions or [],
         }
         if include_memory:
             for fname in include_memory:
