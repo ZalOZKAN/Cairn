@@ -1,5 +1,7 @@
-"""`cairn mcp config`, tool list must be derived, not hardcoded; host formats must be valid."""
+"""`cairn mcp config`: tool list must be derived, not hardcoded; host formats must be valid."""
 from __future__ import annotations
+
+import json
 
 from typer.testing import CliRunner
 
@@ -28,6 +30,31 @@ def test_config_claude_code_does_not_print_desktop_path():
     result = runner.invoke(app, ["mcp", "config", "--host", "claude-code"])
     assert result.exit_code == 0
     assert "claude_desktop_config.json" not in result.stdout
+
+
+def test_output_flag_writes_the_same_block_to_a_file(tmp_path):
+    target = tmp_path / "cairn-mcp.json"
+    result = runner.invoke(app, ["mcp", "config", "--host", "claude-code", "--output", str(target)])
+    assert result.exit_code == 0
+    assert str(target) in result.stdout
+    assert target.exists()
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["mcpServers"]["cairn"]["args"] == ["mcp", "serve"]
+    # the note may mention the key name in prose, but the indented JSON block itself
+    # (the thing a user would otherwise copy-paste) never hits the terminal
+    assert '  "mcpServers": {' not in result.stdout
+
+
+def test_output_flag_still_prints_notes_and_tool_list(tmp_path):
+    target = tmp_path / "unused.json"
+    result = runner.invoke(app, ["mcp", "config", "--host", "cursor", "--output", str(target)])
+    assert "~/.cursor/mcp.json" in result.stdout
+    assert "Tools become available" in result.stdout
+
+
+def test_without_output_flag_prints_block_to_terminal_as_before():
+    result = runner.invoke(app, ["mcp", "config", "--host", "claude-code"])
+    assert '  "mcpServers": {' in result.stdout
 
 
 def test_config_codex_emits_valid_toml_not_json():

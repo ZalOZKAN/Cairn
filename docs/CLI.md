@@ -115,6 +115,7 @@ Start the Cairn stdio MCP server. This is the command that MCP hosts (like Claud
 Print an MCP client config snippet for the chosen host, plus the live list of available tools (so the count can never go stale).
 - **Options:**
   - `--host, -h <name>`: `claude-code` | `cursor` | `antigravity` | `codex` | `opencode` | `windsurf` | `zed` | `generic` (default: `claude-code`).
-  - `--with-hooks`: also print an opt-in SessionStart hook recipe (runs `cairn memory boot` automatically at session start). Doc-only, never writes to any config file. Currently verified for `claude-code` only; other hosts print an explicit "not yet verified" note rather than guessed syntax.
+  - `--with-hooks`: also print an opt-in hook recipe (`SessionStart` runs `cairn memory boot`, `PreToolUse` on `Edit|Write|MultiEdit` runs `cairn memory for-path --hook`, `Stop` runs `cairn memory nudge`). Doc-only, never writes to any config file. Currently verified for `claude-code` only; other hosts print an explicit "not yet verified" note rather than guessed syntax.
+  - `--output, -o <path>`: write the config block to a file instead of the terminal. Useful when the resolved `cairn` path is long enough that a terminal would otherwise wrap it; still needs to be merged into the host's own config file by hand, nothing is edited automatically.
 - **Format note:** most hosts use JSON (`mcpServers` block); `codex` uses TOML (`[mcp_servers.cairn]` in `config.toml`), the command emits the correct format per host, it does not always print JSON.
 - **Claude Code note:** the printed instructions point at `claude mcp add` / `.mcp.json` / `~/.claude.json`, not `claude_desktop_config.json`, which is Claude *Desktop*'s file, a different app.

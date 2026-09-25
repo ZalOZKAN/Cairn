@@ -1,8 +1,9 @@
-"""cairn mcp, run Cairn as an MCP server, or print client config."""
+"""cairn mcp: run Cairn as an MCP server, or print client config."""
 from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -16,7 +17,7 @@ _ALL_HOSTS = [
 
 # Config snippet shape per host, verified against each host's own docs
 # (2026-08-09), not assumed. Three genuinely different JSON shapes exist
-# (plus Codex's TOML), the Step-1 bug (wrong path/format for Claude Code
+# (plus Codex's TOML): the Step-1 bug (wrong path/format for Claude Code
 # and Codex) made "just print the same JSON everywhere" the thing to never
 # repeat here.
 _TOML_HOSTS = {"codex"}
@@ -35,9 +36,9 @@ _JSON_SNIPPET_BUILDERS = {
     "opencode": lambda cmd: {"mcp": {"cairn": {"type": "local", "command": [cmd, "mcp", "serve"]}}},
 }
 
-# Opt-in SessionStart hook recipes, An earlier project decision rejected
+# Opt-in SessionStart hook recipes. An earlier project decision rejected
 # IDE hooks as a *default* trigger (5/6 against) but explicitly allowed
-# doc-only opt-in. type="command" (not "mcp_tool"), Claude Code has a
+# doc-only opt-in. type="command" (not "mcp_tool"): Claude Code has a
 # documented race where SessionStart mcp_tool hooks can fire before the MCP
 # server connects and get silently skipped (anthropics/claude-code#57932).
 _HOOK_SNIPPETS = {
@@ -61,8 +62,8 @@ _HOOK_SNIPPETS = {
 
 _HOOK_UNVERIFIED_NOTE = (
     "No verified SessionStart-equivalent hook recipe for this host yet. "
-    "Memory still surfaces without one, the agent can call `memory_boot` "
-    "itself at any point, this only removes the need to ask. If you've "
+    "Memory still surfaces without one: the agent can call `memory_boot` "
+    "itself at any point. This only removes the need to ask. If you've "
     "confirmed a working recipe on this host, please contribute it (PR)."
 )
 
@@ -71,7 +72,7 @@ _HOST_NOTES = {
         'Run `claude mcp add cairn -- {cmd} mcp serve` (recommended), or add '
         'the block below to `.mcp.json` (project scope, key "mcpServers") or '
         '`~/.claude.json` (user scope). Note: this is Claude Code, not Claude '
-        "Desktop, Desktop's config lives elsewhere."
+        "Desktop. Desktop's config lives elsewhere."
     ),
     "cursor": "Add the block below to ~/.cursor/mcp.json.",
     "antigravity": "Add the block below to ~/.antigravity/mcp.json (path may vary by version).",
@@ -82,13 +83,13 @@ _HOST_NOTES = {
     "opencode": (
         "Add the block below to ~/.config/opencode/opencode.json (global) or "
         'a project-root opencode.json (highest precedence). Note the "type": '
-        '"local" field and that command+args are ONE array, not separate keys, '
+        '"local" field and that command+args are ONE array, not separate keys: '
         "OpenCode's schema, not the common mcpServers one."
     ),
     "windsurf": "Add the block below to ~/.codeium/windsurf/mcp_config.json.",
     "zed": (
         'Add the block below to ~/.config/zed/settings.json. Note the key is '
-        '"context_servers", not "mcpServers", Zed-specific.'
+        '"context_servers", not "mcpServers": Zed-specific.'
     ),
     "generic": "Add the block below to your MCP host's config file.",
 }
@@ -118,21 +119,29 @@ def mcp_config(
         False, "--with-hooks",
         help="Also print an opt-in SessionStart hook recipe (doc-only, never installs anything)",
     ),
+    output: Path = typer.Option(
+        None, "--output", "-o",
+        help="Write the config block to this file instead of the terminal (still needs to be "
+             "merged into the host's own config file by hand; nothing is edited automatically)",
+    ),
 ):
     """Print an MCP client config snippet for the chosen host."""
     cairn_path = shutil.which("cairn") or "cairn"
 
     note = _HOST_NOTES.get(host, _HOST_NOTES["generic"]).format(cmd=cairn_path)
-    console.print(f"[bold]{note}[/bold]\n")
+    console.print(f"[bold]{note}[/bold]\n", soft_wrap=True)
 
     if host in _TOML_HOSTS:
-        console.print(
-            f'[mcp_servers.cairn]\ncommand = "{cairn_path}"\nargs = ["mcp", "serve"]',
-            markup=False,
-        )
+        block = f'[mcp_servers.cairn]\ncommand = "{cairn_path}"\nargs = ["mcp", "serve"]'
     else:
         build = _JSON_SNIPPET_BUILDERS.get(host, _JSON_SNIPPET_BUILDERS["generic"])
-        console.print(json.dumps(build(cairn_path), indent=2), markup=False)
+        block = json.dumps(build(cairn_path), indent=2)
+
+    if output:
+        output.write_text(block + "\n", encoding="utf-8")
+        console.print(f"[green]Config block written to {output}[/green]", soft_wrap=True)
+    else:
+        console.print(block, markup=False, soft_wrap=True)
 
     tools = _tool_names()
     console.print(f"\n[dim]Tools become available ({len(tools)}):[/dim] " + ", ".join(tools))
@@ -146,4 +155,4 @@ def mcp_config(
         if recipe is None:
             console.print(f"[dim]{_HOOK_UNVERIFIED_NOTE}[/dim]", markup=False)
         else:
-            console.print(recipe(cairn_path), markup=False)
+            console.print(recipe(cairn_path), markup=False, soft_wrap=True)
