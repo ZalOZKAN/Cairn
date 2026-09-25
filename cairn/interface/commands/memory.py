@@ -1,4 +1,4 @@
-"""cairn memory, session memory management."""
+"""cairn memory: session memory management."""
 from __future__ import annotations
 
 import typer
@@ -29,7 +29,7 @@ def memory_save(
         extraction = {}
         if summary:
             session_mgr._write_handoff({}, summary)
-            console.print("[green]✓ Handoff written (extraction skipped)[/green]")
+            console.print("[green]Handoff written (extraction skipped).[/green]")
         else:
             console.print("[yellow]--summary or extraction required[/yellow]")
         return
@@ -47,7 +47,7 @@ def memory_save(
 
     session_mgr.end_session(extraction, summary)
 
-    console.print("\n[bold green]✓ Session memory saved[/bold green]")
+    console.print("\n[bold green]Session memory saved.[/bold green]")
 
     if extraction.get("tasks_completed"):
         console.print(f"  Completed: {len(extraction['tasks_completed'])} task(s)")
@@ -77,7 +77,7 @@ def memory_boot(
         try:
             import pyperclip
             pyperclip.copy(context)
-            console.print(f"[green]✓ Copied to clipboard (~{token_est} tokens)[/green]")
+            console.print(f"[green]Copied to clipboard (~{token_est} tokens).[/green]")
         except ImportError:
             console.print("[yellow]pyperclip not installed: pip install pyperclip[/yellow]")
             console.print(context)
@@ -105,7 +105,7 @@ def memory_status():
     table.add_row("State", state.get("task_status", "idle"))
     table.add_row("Session #", str(state.get("session_count", 0)))
     table.add_row("Last updated", (state.get("updated_at") or "-")[:19])
-    table.add_row("Manifest", "[green]✓[/green]" if manifest_mgr.exists() else "[red]✗ missing[/red]")
+    table.add_row("Manifest", "[green]OK[/green]" if manifest_mgr.exists() else "[red]missing[/red]")
 
     console.print(table)
 
@@ -149,7 +149,7 @@ def memory_manifest(
     with console.status("[bold green]Generating manifest..."):
         content = manifest_mgr.generate(agent)
 
-    console.print("[green]✓ context-manifest.md generated[/green]")
+    console.print("[green]context-manifest.md generated.[/green]")
     console.print(content)
 
 
@@ -255,7 +255,7 @@ def memory_invalidate(
     agent = Agent()
     ok = agent.memory.invalidate(mem_id, reason=reason)
     if ok:
-        console.print(f"[green]✓ Record #{mem_id} invalidated.[/green]")
+        console.print(f"[green]Record #{mem_id} invalidated.[/green]")
         if reason:
             console.print(f"  [dim]Reason: {reason}[/dim]")
     else:
@@ -286,7 +286,7 @@ def memory_clear(
     from cairn.core import Agent
     agent = Agent()
     count = agent.memory.clear()
-    console.print(f"[green]✓ {count} entries deleted.[/green]")
+    console.print(f"[green]{count} entries deleted.[/green]")
 
 
 @memory_app.command("export")
