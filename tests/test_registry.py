@@ -2,9 +2,32 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cairn.config.registry import list_projects, register_project
+
+
+class _FrozenClock:
+    """Every registration gets the same timestamp, like two quick calls on a
+    coarse Windows clock (~15.6 ms on Python < 3.13)."""
+
+    @staticmethod
+    def now(tz=None):
+        return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_same_timestamp_ties_resolve_to_most_recently_registered(tmp_path, monkeypatch):
+    monkeypatch.setattr("cairn.config.registry.datetime", _FrozenClock)
+    registry_path = tmp_path / "registry.json"
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    register_project(a, registry_path)
+    register_project(b, registry_path)
+    assert [p["name"] for p in list_projects(registry_path)] == ["b", "a"]
+    register_project(a, registry_path)  # touching a again makes it the most recent
+    assert [p["name"] for p in list_projects(registry_path)] == ["a", "b"]
 
 
 def test_register_creates_registry_file():
