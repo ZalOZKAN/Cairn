@@ -1331,7 +1331,12 @@ class Memory:
             return r[0] if r else None
 
         me = _id(d["uid"])
-        conn.execute("UPDATE memories SET superseded_by=? WHERE id=?", (_id(d.get("superseded_by")), me))
+        # Only write when the file states it: every file gets re-linked here in
+        # glob order, and an unreexported older file is silent on this field,
+        # so writing NULL unconditionally could erase a link the newer file's
+        # `supersedes` branch just set, depending on processing order.
+        if d.get("superseded_by"):
+            conn.execute("UPDATE memories SET superseded_by=? WHERE id=?", (_id(d["superseded_by"]), me))
         older = _id(d.get("supersedes"))
         if older is not None:
             conn.execute(

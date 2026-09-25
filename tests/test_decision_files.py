@@ -110,11 +110,15 @@ def test_supersede_written_only_in_files_is_applied(root):
     m = _mem(root)
     old = m.record_decision("Use REST for the public API")
     old_uid = decision_files.parse(_files(root)[0].read_text(encoding="utf-8"))["uid"]
+    # "000000" sorts before any random 6-hex uid glob-adjacent to it, forcing this
+    # file to be linked before old's own (stale, still-active) file in the same
+    # sync pass, the ordering that used to let old's file wipe the link back out.
+    new_uid = old_uid.split("-")[0] + "-000000"
     newer = decision_files.render({
-        "uid": "20260925-beef02", "date": "2026-09-25T09:00:00+00:00", "status": "active",
+        "uid": new_uid, "date": "2026-09-25T09:00:00+00:00", "status": "active",
         "importance": 2, "supersedes": old_uid, "decision": "Use GraphQL for the public API",
     })
-    (root / ".cairn" / "decisions" / "20260925-beef02-graphql.md").write_text(newer, encoding="utf-8")
+    (root / ".cairn" / "decisions" / f"{new_uid}-graphql.md").write_text(newer, encoding="utf-8")
     m.sync_decision_files()
     assert m.get_full(old)["valid_until"] is not None
     assert m.get_full(old)["superseded_by"] is not None

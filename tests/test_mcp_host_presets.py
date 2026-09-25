@@ -1,18 +1,27 @@
-"""Multi-host config presets, Competitive Response Plan Step 7.
+"""Multi-host config presets: Competitive Response Plan Step 7.
 
 Each host's snippet shape was verified against that host's own docs on
-2026-08-09 (see cairn/interface/commands/mcp.py comments for sources) -
-these tests pin the verified shape down so it can't silently regress.
+2026-08-09 (see cairn/interface/commands/mcp.py comments for sources).
+These tests pin the verified shape down so it can't silently regress.
 """
 from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from cairn.interface.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _no_path_lookup(monkeypatch):
+    """These tests check per-host JSON/TOML shape, not path resolution (that's
+    covered in test_mcp_config.py): pin `shutil.which` so a real `cairn` on
+    PATH (as in CI, unlike most dev machines) can't change the expected value."""
+    monkeypatch.setattr("cairn.interface.commands.mcp.shutil.which", lambda name: None)
 
 
 def _run(host: str) -> str:
