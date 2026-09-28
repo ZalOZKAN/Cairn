@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from pathlib import Path
 import types
 from unittest.mock import patch, MagicMock
 
@@ -22,7 +23,7 @@ def _mk_memory(tmpdir: str, conflict_enabled: bool = True) -> Memory:
     config["memory"]["async_store"] = False
     config["memory"].setdefault("dedup", {})["enabled"] = False
     config["memory"]["conflict"] = {"enabled": conflict_enabled, "min_importance": 1}
-    return Memory(config)
+    return Memory(config, project_dir=Path(tmpdir))
 
 
 def _stub_litellm(response_json: str):

@@ -1,5 +1,5 @@
 """
-Cairn MCP server, exposes a project's `.cairn/` folder as
+Cairn MCP server: exposes a project's `.cairn/` folder as
 Model Context Protocol tools.
 
 Any MCP host (Claude Code, Cursor, Antigravity, custom CLI) can connect
@@ -18,18 +18,20 @@ command array), so there is no single snippet to paste here without risking
 staleness or a wrong host's syntax.
 
 Tools exposed:
-    memory_recall      , semantic + keyword recall, decay-aware
-    memory_store       , write a new memory entry
-    memory_recent      , last N entries
-    memory_search      , substring search
-    memory_invalidate  , retire a memory by id with optional reason
-    memory_boot        , session boot context
-    memory_status      , current task + last handoff
-    record_decision    , first-class decision with reasoning/alternatives/evidence/supersedes
-    memory_get         , full record including evidence + supersedes chain
-    memory_thread      , chronological versions of a decision topic
-    decision_audit_score, completeness score 0/4..4/4 for a decision
-    check_approach     , has this approach already been rejected or abandoned?
+    memory_recall:       semantic + keyword recall, decay-aware
+    memory_store:        write a new memory entry
+    memory_recent:       last N entries
+    memory_search:       substring search
+    memory_invalidate:   retire a memory by id with optional reason
+    memory_boot:         session boot context
+    memory_status:       current task + last handoff
+    record_decision:     first-class decision with reasoning/alternatives/evidence/supersedes
+    memory_get:          full record including evidence + supersedes chain
+    memory_thread:       chronological versions of a decision topic
+    decision_audit_score: completeness score 0/4..4/4 for a decision
+    check_approach:      has this approach already been rejected or abandoned?
+    decisions_for_path:  active decisions scoped to a file's directory
+    memory_save:         handoff note for the next session, in any tool
 """
 from __future__ import annotations
 
@@ -58,6 +60,9 @@ class CairnMCPServer:
         self._last_save_at = 0.0
         self._idle_timer: threading.Timer | None = None
         self._autosave_lock = threading.Lock()
+        # the MCP client's name (e.g. "claude-code", "cursor"), from initialize
+        self.client_name: str | None = None
+        self._note_saved = False
 
     # ---- project (lazy) -------------------------------------------------
 
@@ -71,9 +76,21 @@ class CairnMCPServer:
     # ---- main loop ------------------------------------------------------
 
     def run(self) -> None:
+        # MCP is UTF-8 JSON-RPC regardless of the host process's own console
+        # encoding (cp1252 on many Windows setups unless PYTHONIOENCODING is
+        # set); without this, non-ASCII decision text can crash `_send`, and
+        # bytes as ordinary as a UTF-8 BOM decode into un-strippable mojibake
+        # instead of "\ufeff", silently dropping the first request.
+        for stream in (sys.stdin, sys.stdout):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError, OSError):
+                pass  # already UTF-8, or a stream (e.g. under a test) that cannot be reconfigured
         try:
             for line in sys.stdin:
-                line = line.strip()
+                # some shells prepend a UTF-8 BOM to piped input; it would make
+                # the first request (initialize) unparseable and silently skipped
+                line = line.strip().lstrip("\ufeff")
                 if not line:
                     continue
                 try:
@@ -94,17 +111,28 @@ class CairnMCPServer:
             self._shutdown()
 
     def _shutdown(self) -> None:
-        """Trigger #5: final flush + extract on EOF/SIGTERM."""
+        """Trigger #5: final flush + extract on EOF/SIGTERM. The host closing
+        the server is the one session-end signal every MCP host gives, so:
+        any AGENTS.md hand edit still pending import (the agent edited the
+        block but never called a tool that would have synced it) is imported
+        now, rather than sitting stale until something else happens to
+        trigger a sync; and the handoff's git and decision sections are
+        refreshed for whichever tool opens the project next. A note the agent
+        left this session is kept, not overwritten by the automatic save."""
         if self._idle_timer is not None:
             self._idle_timer.cancel()
         if self._project is None:
             return
         try:
             self._project.memory.flush()
-            self._maybe_autosave(force=True, reason="shutdown")
+            self._project.memory._refresh_agents_md()
+            if not self._note_saved:
+                self._maybe_autosave(force=True, reason="shutdown")
+            from cairn.memory import handoff
+            handoff.refresh(self._project.memory, self._project.session.handoff_path)
             self._project.memory.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"cairn: shutdown save failed: {exc}", file=sys.stderr)
 
     # ---- auto-save (Phase 2 Stream A) -----------------------------------
 
@@ -199,6 +227,19 @@ class CairnMCPServer:
         params = request.get("params", {}) or {}
 
         if method == "initialize":
+            self.client_name = (params.get("clientInfo") or {}).get("name") or None
+            # Force Project() now rather than waiting for the first tool call:
+            # its constructor imports any AGENTS.md hand edit still pending
+            # from a previous session (Project.sync_decision_files ->
+            # Memory._refresh_agents_md). A session that never happens to
+            # call a Cairn tool would otherwise leave that edit un-imported
+            # indefinitely, since _shutdown() also only runs the import if
+            # `.project` was ever touched, and cannot assume the host closes
+            # this process's stdin cleanly rather than terminating it outright.
+            try:
+                self.project  # noqa: B018
+            except Exception as exc:
+                print(f"cairn: startup sync failed: {exc}", file=sys.stderr)
             return self._respond(req_id, {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
@@ -300,13 +341,20 @@ class CairnMCPServer:
                   {}),
             _tool("record_decision",
                   "Record a settled decision so it is not re-argued later. Call it the moment a choice "
-                  "between options is settled, by you or the user: a library or tool, an architecture "
-                  "or pattern, a data model, an API shape, a convention, a trade-off, or 'we tried X "
-                  "and it did not work'. Pass reasoning, the rejected alternatives, and scope_path "
-                  "when it only applies to part of the repo. If it replaces an earlier decision, pass "
-                  "supersedes. The decision is saved as a reviewable file in .cairn/decisions/. "
+                  "between options is settled, by you or the user, even if only mentioned in passing "
+                  "('from now on...', 'we agreed to...', 'switch to...', 'drop X'): a library or tool, an "
+                  "architecture or pattern, a data model, an API shape, a convention, a trade-off, or 'we "
+                  "tried X and it did not work'. Pass reasoning, the rejected alternatives, and scope_path "
+                  "when it only applies to part of the repo. If it replaces an earlier decision and you "
+                  "know its id, pass supersedes; if you don't, pass replaces with a short phrase from it "
+                  "instead and Cairn will find it. The decision is saved as a reviewable file in "
+                  ".cairn/decisions/. "
                   "If the decision is a standing preference that would apply to any project, not just this codebase (e.g. 'always use pnpm over npm', 'prefer functional components in React'), pass scope='global' unprompted so it isn't re-decided next project. "
-                  "If `memory.conflict.enabled` is set in config, the response may include a `conflicts` field flagging prior decisions this one may contradict, treat it as a prompt to ask the user, never as a reason to silently invalidate anything.",
+                  "If `memory.conflict.enabled` is set in config, the response may include a `conflicts` field flagging prior decisions this one may contradict, treat it as a prompt to ask the user, never as a reason to silently invalidate anything. "
+                  "The response may also include `possible_supersedes` (other active decisions in the same "
+                  "scope that look related) or `replace_candidates` (when `replaces` matched more than one); "
+                  "if one of them really is what this decision replaces, call `memory_invalidate` on its id "
+                  "with a reason, so only the current decision stays active.",
                   {"decision": _str("The decision in one sentence"),
                    "reasoning": _str("Why we chose this", default=""),
                    "alternatives": {"type": "array",
@@ -321,6 +369,8 @@ class CairnMCPServer:
                                     "claim": {"type": "string"}}}},
                    "supersedes": _str("Prior decision id this replaces, plain number for a "
                                        "project decision, or 'g<n>' for a global decision"),
+                   "replaces": _str("A short phrase from the decision this replaces, when you don't "
+                                     "have its id. Ignored if supersedes is also given."),
                    "chose_because": _str("Short tag for the deciding factor", default=""),
                    "importance": _int("1=normal, 2=decision, 3=critical", default=2),
                    "scope_path": _str("Optional workspace-relative path this decision applies "
@@ -366,10 +416,15 @@ class CairnMCPServer:
                   {"id": _str("Decision row id, plain number for project, 'g<n>' for global")},
                   required=["id"]),
             _tool("memory_save",
-                  "Run the helper-LLM extractor over recent session entries. Hosts should "
-                  "call this at session boundaries (handoff, before exit) so structured "
-                  "memory survives the next session.",
-                  {}),
+                  "Leave a handoff note when you stop with work unfinished, so the next session "
+                  "can continue, even in a different tool (Antigravity, Claude Code, Cursor, ...). "
+                  "Pass what was done and the next step the user asked for; Cairn adds the git "
+                  "state and latest decisions. If the task is complete, leave next_step empty; "
+                  "never invent further steps. Saving a note is the last thing you do: it does "
+                  "not ask you to start the next step. Without arguments it runs the optional "
+                  "helper-model extractor instead.",
+                  {"summary": _str("What was done this session, in a few sentences"),
+                   "next_step": _str("The next step still open from the user's request; empty when done")}),
         ]
 
 
@@ -397,6 +452,13 @@ def _h_store(srv: CairnMCPServer, args: dict) -> str:
 
 def _h_memory_save(srv: CairnMCPServer, args: dict) -> str:
     """Trigger #1: explicit MCP memory_save tool. Hosts call at session boundaries."""
+    summary = (args.get("summary") or "").strip()
+    next_step = (args.get("next_step") or "").strip()
+    if summary or next_step:
+        from cairn.memory import handoff
+        path = handoff.save_note(srv.project, summary, next_step, source=srv.client_name)
+        srv._note_saved = True
+        return json.dumps({"ok": True, "handoff": str(path)}, ensure_ascii=False)
     extraction = srv._maybe_autosave(reason="explicit", force=True)
     if extraction is None:
         return "no extraction (helper unavailable or no recent entries)"
@@ -433,7 +495,7 @@ def _h_boot(srv: CairnMCPServer, args: dict) -> str:
     fmt = args.get("format", "text")
     extras = args.get("include_memory") or []
     return srv.project.injector.build(
-        fmt=fmt, include_memory=extras or None, decisions=srv.project.memory.active_decisions()
+        fmt=fmt, include_memory=extras or None, decisions=srv.project.memory.decisions_block()
     ) or "(empty)"
 
 
@@ -467,6 +529,13 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
     if supersedes is not None:
         supersedes = str(supersedes) if supersedes else None
     warning = None
+    replace_candidates = None
+    if supersedes is None and args.get("replaces"):
+        found = srv.project.memory.resolve_replaces(args["replaces"])
+        if found["id"] is not None:
+            supersedes = str(found["id"])
+        elif found["candidates"]:
+            replace_candidates = found["candidates"]
     if supersedes is not None:
         prior = srv.project.memory.get_full(supersedes)
         if not prior or prior.get("valid_until"):
@@ -489,12 +558,20 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
         importance=int(args.get("importance", 2)),
         scope_path=args.get("scope_path") or None,
         scope=args.get("scope", "project"),
+        recorded_by=srv.client_name,
     )
     res = {"id": new_id, "kind": "decision"}
     if warning:
         res["warning"] = warning
     if conflicts:
         res["conflicts"] = conflicts
+    if replace_candidates:
+        res["replace_candidates"] = replace_candidates
+    elif supersedes is None and args.get("scope", "project") != "global":
+        possible = srv.project.memory.possible_supersedes(
+            args["decision"], args.get("scope_path"), exclude_id=new_id)
+        if possible:
+            res["possible_supersedes"] = possible
     return json.dumps(res, ensure_ascii=False)
 
 

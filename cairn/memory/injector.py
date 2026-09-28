@@ -1,13 +1,13 @@
 """
-ContextInjector, produce the boot context to feed an AI at session start.
+ContextInjector: produce the boot context to feed an AI at session start.
 
 Goal: ~1100 tokens of fixed boot cost (instead of 70-80k).
 
 Layers (lazy, only present ones are included):
-  L1: state.json          ~200 tokens , active task, status
-  L2: context-manifest    ~500 tokens , project context
-  L3: session-handoff     ~400 tokens , where we left off
-  L4: memory/*.md         on demand   , only when INDEX matches
+  L1: state.json          ~200 tokens  : active task, status
+  L2: context-manifest    ~500 tokens  : project context
+  L3: session-handoff     ~400 tokens  : where we left off
+  L4: memory/*.md         on demand    : only when INDEX matches
 
 Output formats:
   - "text"   : plain text the user can paste into any AI
@@ -23,19 +23,23 @@ from cairn.memory.manifest import ManifestManager
 from cairn.memory.session import SessionManager
 
 AGENT_GUIDE = (
-    "Cairn keeps this project's decisions. Before proposing an approach, call "
-    "`check_approach`. Before editing a file, call `decisions_for_path` with it. "
-    "Whenever a choice between options is settled (library, pattern, data model, "
-    "API shape, trade-off), call `record_decision` with reasoning, the rejected "
-    "alternatives, and `scope_path` when it applies to one part of the repo. If "
-    "it replaces an earlier decision, pass `supersedes`."
+    "Cairn keeps this project's decisions and carries them between tools. Every "
+    "active decision is already in AGENTS.md (and in `memory_boot`); follow them "
+    "without looking them up again. Whenever a choice between options is settled "
+    "(library, pattern, data model, API shape, trade-off), call `record_decision` "
+    "with reasoning, the rejected alternatives, and `scope_path` when it applies to "
+    "one part of the repo; if it replaces an earlier decision, pass `supersedes`. "
+    "Call `check_approach` before trying something that may have been rejected "
+    "before. If you stop with work unfinished, call `memory_save` with a short summary "
+    "and the step still open (empty when the task is done, never an invented one), so "
+    "the next session, in any tool, can continue. Saving the note ends your turn."
 )
 
 
 class ContextInjector:
     """
     Boot-context generator.
-    Works with any AI, the `fmt` parameter controls the output shape.
+    Works with any AI: the `fmt` parameter controls the output shape.
     """
 
     def __init__(self, project_dir: Path | None = None):
@@ -47,7 +51,7 @@ class ContextInjector:
         self,
         fmt: str = "text",
         include_memory: list[str] | None = None,
-        decisions: list[dict] | None = None,
+        decisions: str | None = None,
     ) -> str:
         """
         Build the boot inject string.
@@ -72,11 +76,11 @@ class ContextInjector:
 
     # ── Format builders ────────────────────────────────────────────────
 
-    def _build_text_format(self, include_memory: list[str] | None, decisions: list[dict] | None = None) -> str:
+    def _build_text_format(self, include_memory: list[str] | None, decisions: str | None = None) -> str:
         """Pasteable-into-any-AI format."""
         sections = []
 
-        sections.append("# Cairn, Session Boot Context")
+        sections.append("# Cairn: Session Boot Context")
         sections.append("*Read this context and continue from where we left off.*\n")
 
         # L1: State
@@ -103,11 +107,7 @@ class ContextInjector:
             sections.append("")
 
         if decisions:
-            from cairn.memory.decision_files import format_brief
-            sections.append(format_brief(
-                decisions,
-                "## Active decisions (do not contradict without asking; memory_get <id> for the why)",
-            ))
+            sections.append(decisions)
             sections.append("")
 
         # L4: On-demand memory
@@ -125,7 +125,7 @@ class ContextInjector:
 
     def _build_claude_format(self) -> str:
         """Claude Code @file reference format."""
-        lines = ["# Session Start, paste this into Claude Code\n"]
+        lines = ["# Session Start: paste this into Claude Code\n"]
 
         persistence = self.project_dir / ".cairn" / "persistence"
 
@@ -140,14 +140,14 @@ class ContextInjector:
         lines.append(AGENT_GUIDE)
         return "\n".join(lines)
 
-    def _build_json_format(self, include_memory: list[str] | None, decisions: list[dict] | None = None) -> str:
-        """JSON format, for SDK integration."""
+    def _build_json_format(self, include_memory: list[str] | None, decisions: str | None = None) -> str:
+        """JSON format: for SDK integration."""
         data = {
             "state": self.session_mgr.load_state(),
             "manifest": self.manifest_mgr.load(),
             "handoff": self.session_mgr.load_handoff(),
             "memory": {},
-            "decisions": decisions or [],
+            "decisions": decisions or "",
         }
         if include_memory:
             for fname in include_memory:

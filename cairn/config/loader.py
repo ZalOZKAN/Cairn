@@ -29,6 +29,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # A path-scoped decision is flagged "needs review" once this many
         # commits have touched its path since it was recorded or confirmed.
         "stale": {"enabled": True, "commits": 10},
+        # Keep every active decision in a managed block of the project's AGENTS.md.
+        "agents_md": {"enabled": True},
         # Stop-hook reminder threshold: file edits since the last record_decision.
         "nudge": {"edits": 8},
         "conflict": {
@@ -55,8 +57,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     # Single optional helper model used for memory housekeeping
     # (extractor, manifest generation, conflict detection, summarization).
-    # If unset and the call is needed, the relevant feature is skipped.
-    "memory_helper_model": "groq/llama-3.3-70b-versatile",
+    # Off unless a config sets it; `cairn doctor` lists what is skipped.
+    "memory_helper_model": None,
     "mcp": {"servers": []},
 }
 

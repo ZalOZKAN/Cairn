@@ -1,5 +1,5 @@
 """
-SessionManager, persist and load session state.
+SessionManager: persist and load session state.
 
 Each project keeps state under its own `.cairn/persistence/`:
 - state.json          : active task, current status (~200 tokens)
@@ -129,7 +129,7 @@ class SessionManager:
     def _write_handoff(self, extraction: dict, summary: str) -> None:
         """Write session-handoff.md."""
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        lines = [f"# Session Handoff, {now}\n"]
+        lines = [f"# Session Handoff: {now}\n"]
 
         if extraction.get("next_session_start"):
             lines.append(f"## Continuation Point\n{extraction['next_session_start']}\n")

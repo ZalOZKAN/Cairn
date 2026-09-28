@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -18,7 +19,7 @@ def _mk_memory(tmpdir: str, **overrides) -> Memory:
     config["memory"]["async_store"] = overrides.pop("async_store", False)
     config["memory"]["backend"] = overrides.pop("backend", "sqlite")
     config["memory"].setdefault("decay", {})["enabled"] = overrides.pop("decay", True)
-    return Memory(config)
+    return Memory(config, project_dir=Path(tmpdir))
 
 
 def test_global_store_creates_separate_db_file():

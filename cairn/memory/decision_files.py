@@ -19,7 +19,7 @@ DECISIONS_DIRNAME = "decisions"
 
 _FRONT_KEYS = (
     "uid", "date", "status", "importance", "path", "supersedes",
-    "superseded_by", "valid_until", "invalidated_reason", "anchor_commit",
+    "superseded_by", "valid_until", "invalidated_reason", "anchor_commit", "recorded_by",
 )
 _ITEM_RE = re.compile(r"^- \*\*(.+?)\*\*:\s?(.*)$")
 
@@ -80,7 +80,7 @@ def parse(text: str) -> dict[str, Any]:
 
     out: dict[str, Any] = {k: front.get(k) for k in _FRONT_KEYS}
     out["uid"] = str(front["uid"])
-    for k in ("supersedes", "superseded_by", "anchor_commit"):
+    for k in ("supersedes", "superseded_by", "anchor_commit", "recorded_by"):
         if out[k] is not None:
             out[k] = str(out[k])
     if out["date"] is not None and not isinstance(out["date"], str):
@@ -207,5 +207,10 @@ def format_brief(rows: list[dict], header: str) -> str:
         if r.get("stale"):
             flag = f" (NEEDS REVIEW: {r['stale']['commits_since']} commits since recorded)"
         first = (r.get("decision") or "").strip().splitlines()[0] if r.get("decision") else ""
-        lines.append(f"- #{r['id']}{where}: {first}{flag}")
+        files = r.get("files") or []
+        touches = ""
+        if files:
+            shown = ", ".join(files[:3]) + (f", +{len(files) - 3} more" if len(files) > 3 else "")
+            touches = f" (changed: {shown})"
+        lines.append(f"- #{r['id']}{where}: {first}{flag}{touches}")
     return "\n".join(lines)

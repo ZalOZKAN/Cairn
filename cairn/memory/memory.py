@@ -1,5 +1,5 @@
 """
-Hybrid Memory, SQLite + ChromaDB vector search.
+Hybrid Memory: SQLite + ChromaDB vector search.
 
 Capabilities:
 - Async store (queue + worker thread): callers don't block on DB writes.
@@ -83,6 +83,12 @@ class Memory:
         redact_cfg = cfg.get("redact", {})
         self.redact_enabled = redact_cfg.get("enabled", True)
         self._redact_extra_patterns = redact_cfg.get("extra_patterns", [])
+
+        self.agents_md_enabled = (cfg.get("agents_md") or {}).get("enabled", True)
+        # re-entrancy guard: set while agents_md.write() is importing hand
+        # edits (record_decision/invalidate calls would otherwise recurse
+        # into a mid-update regeneration of the very block it is writing)
+        self._agents_md_syncing = False
 
         stale_cfg = cfg.get("stale", {})
         self.stale_enabled = stale_cfg.get("enabled", True)
@@ -191,6 +197,7 @@ class Memory:
             ("scope_path", "TEXT"),
             ("uid", "TEXT"),
             ("anchor_commit", "TEXT"),
+            ("recorded_by", "TEXT"),
         ]
         for col, typ in adds:
             if col not in existing:
@@ -638,7 +645,7 @@ class Memory:
         """Opt-in (`memory.conflict.enabled`, default false): ask the helper LLM
         whether `prompt`/`response` contradicts a prior high-importance record
         (project or global). Returns `[{"id", "reason"}, ...]`, empty if the
-        feature is off or nothing conflicts. Never invalidates anything itself -
+        feature is off or nothing conflicts. Never invalidates anything itself;
         see `cairn/memory/conflict.py` for the false-positive rationale."""
         from cairn.memory.conflict import ConflictDetector
         detector = ConflictDetector(self._config)
@@ -655,6 +662,7 @@ class Memory:
         importance: int = 2,
         scope_path: str | None = None,
         scope: str = "project",
+        recorded_by: str | None = None,
     ) -> int | str:
         """Insert a decision row synchronously and return its id.
 
@@ -668,6 +676,9 @@ class Memory:
                       scope="project".
         scope:        "project" (default, this project's .cairn/) or
                       "global" (~/.cairn/global.db, cross-project).
+        recorded_by:  the tool that recorded it (MCP client name, "cli"), so
+                      a project worked on from several tools shows where
+                      each decision came from.
         """
         import json as _json
 
@@ -696,8 +707,8 @@ class Memory:
             cursor = conn.execute(
                 "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
                 "content_hash, valid_from, kind, reasoning, alternatives_json, chose_because, scope_path, "
-                "uid, anchor_commit) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "uid, anchor_commit, recorded_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     now,
                     decision,
@@ -713,6 +724,7 @@ class Memory:
                     norm_scope,
                     new_uid(datetime.fromisoformat(now)),
                     None if is_global else self._git_head(),
+                    recorded_by,
                 ),
             )
             new_id = cursor.lastrowid
@@ -763,6 +775,16 @@ class Memory:
             self._export_decision(new_id)
         if superseded_ok and sup_db == self.db_path:
             self._export_decision(sup_num_id)
+        if not is_global or superseded_ok:
+            # new_id (now active) and, on a same-scope supersede, sup_num_id
+            # (now inactive) both just changed status in this exact call; the
+            # file on disk is always one regeneration behind at this point
+            # (that regeneration is what this call is about to do), so
+            # neither must be mistaken for a hand edit on either side of the diff
+            exclude = ({new_id} if not is_global else set())
+            if superseded_ok and sup_db == self.db_path:
+                exclude.add(sup_num_id)
+            self._refresh_agents_md(exclude_ids=exclude or None)
         return f"g{new_id}" if is_global else new_id
 
     def get_full(self, mem_id: int | str) -> dict | None:
@@ -776,7 +798,8 @@ class Memory:
             row = conn.execute(
                 "SELECT id, timestamp, prompt, response, keywords, importance, "
                 "valid_from, valid_until, invalidated_reason, kind, reasoning, "
-                "alternatives_json, superseded_by, chose_because, scope_path "
+                "alternatives_json, superseded_by, chose_because, scope_path, "
+                "uid, recorded_by "
                 "FROM memories WHERE id=?",
                 (num_id,),
             ).fetchone()
@@ -803,7 +826,7 @@ class Memory:
             "reasoning": row[10],
             "alternatives": _json.loads(row[11]) if row[11] else [],
             "superseded_by": _tag(row[12]), "chose_because": row[13],
-            "scope_path": row[14],
+            "scope_path": row[14], "uid": row[15], "recorded_by": row[16],
             "scope": "global" if is_global else "project",
             "supersedes": _tag(supersedes_id[0]) if supersedes_id else None,
             "evidence": evidence,
@@ -887,6 +910,69 @@ class Memory:
         for r in results:
             r.pop("score", None)
         return results[:limit]
+
+    @staticmethod
+    def _meaningful_overlap(kw_a: set[str], kw_b: set[str]) -> int:
+        """Shared-stem count, but only counted when it is a real share of
+        meaning: >=2 stems AND at least half of the *shorter* decision's own
+        stems, not just a couple of words (e.g. "use", "http") that happen to
+        recur across two unrelated decisions filed under the same busy scope.
+        Returns 0 when the pair does not qualify."""
+        if not kw_a or not kw_b:
+            return 0
+        overlap = len(kw_a & kw_b)
+        if overlap >= 2 and overlap / min(len(kw_a), len(kw_b)) >= 0.5:
+            return overlap
+        return 0
+
+    def possible_supersedes(self, decision: str, scope_path: str | None, exclude_id: int | None = None) -> list[dict]:
+        """Active project decisions in the same scope as `decision` that share
+        a meaningful share of their keywords with it (see `_meaningful_overlap`).
+        Advisory only, like `check_conflicts`: never invalidates anything: the
+        caller decides whether to pass one back as `supersedes`, or invalidate
+        it directly with a reason."""
+        if not scope_path:
+            return []
+        norm_scope = self._normalize_path(scope_path)
+        kw = self._stems(decision)
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, uid, prompt FROM memories WHERE kind='decision' "
+                "AND valid_until IS NULL AND scope_path=?", (norm_scope,),
+            ).fetchall()
+        out = []
+        for rid, uid, prompt in rows:
+            if rid == exclude_id:
+                continue
+            overlap = self._meaningful_overlap(kw, self._stems(prompt))
+            if overlap:
+                out.append({"id": rid, "uid": uid, "decision": prompt, "overlap": overlap})
+        out.sort(key=lambda r: -r["overlap"])
+        return out[:3]
+
+    def resolve_replaces(self, text: str) -> dict:
+        """Find the single active project decision `text` names, by substring
+        either way or a meaningful stem overlap (see `_meaningful_overlap`), so
+        a caller can pass its id as `supersedes` without looking it up first:
+        `{"id", "candidates"}`. `id` is set only when exactly one decision
+        matches; otherwise every candidate is listed (possibly empty) and
+        nothing is resolved, since a wrong guess would retire the wrong
+        decision."""
+        needle = " ".join(text.split()).lower()
+        kw = self._stems(text)
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, uid, prompt, scope_path FROM memories "
+                "WHERE kind='decision' AND valid_until IS NULL"
+            ).fetchall()
+        out = []
+        for rid, uid, prompt, sp in rows:
+            hay = prompt.strip().lower()
+            overlap = self._meaningful_overlap(kw, self._stems(prompt))
+            if (needle and (needle in hay or hay in needle)) or overlap:
+                out.append({"id": rid, "uid": uid, "decision": prompt, "scope_path": sp, "overlap": overlap})
+        out.sort(key=lambda r: -r["overlap"])
+        return {"id": out[0]["id"] if len(out) == 1 else None, "candidates": out[:5]}
 
     def thread(self, topic_or_id: str | int, limit: int = 20) -> list[dict]:
         """Chronological list of decision versions on the same topic.
@@ -986,7 +1072,24 @@ class Memory:
                     self._failed_writes += 1
             if not is_global:
                 self._export_decision(num_id)
+                # num_id just went inactive in this exact call; the file on
+                # disk still shows its old bullet until this regeneration,
+                # which must not be mistaken for a hand-added decision
+                self._refresh_agents_md(exclude_ids={num_id})
         return ok
+
+    def _refresh_agents_md(self, exclude_ids: set[int] | None = None) -> None:
+        """Keep the AGENTS.md block in step with the decisions. Only an existing
+        block is refreshed; `cairn init` / `cairn sync` are what add it.
+        `exclude_ids`: rows whose active/inactive status the caller just
+        changed, in this same call: the file on disk (not yet regenerated)
+        always lags one of these by construction, so neither side of the
+        two-way diff must mistake that lag for a hand edit."""
+        if self._agents_md_syncing:
+            return
+        if self.agents_md_enabled and self.decisions_dir() is not None:
+            from cairn.memory import agents_md
+            agents_md.write(self, exclude_ids=exclude_ids)
 
     # ------------------------- decision files (git-native) -------------------------
 
@@ -1052,10 +1155,11 @@ class Memory:
                 return self._normalize_path(path)
         return self._normalize_path(str(p))
 
-    def decisions_for_path(self, path: str, limit: int = 8) -> list[dict]:
-        """Active project decisions scoped to `path` or one of its ancestor
-        directories, most important first. Repo-wide decisions are left out
-        on purpose: they belong in the session boot summary, not on every edit."""
+    def decisions_for_path(self, path: str) -> list[dict]:
+        """Every active project decision scoped to `path` or one of its
+        ancestor directories, most important first. Never truncated: an
+        applicable decision must not be dropped. Repo-wide decisions are left
+        out on purpose; they are in AGENTS.md and the boot context already."""
         rel = self._relative_to_project(path)
         if not rel:
             return []
@@ -1064,8 +1168,8 @@ class Memory:
             rows = conn.execute(
                 "SELECT id, uid, prompt, reasoning, scope_path, importance FROM memories "
                 "WHERE kind='decision' AND valid_until IS NULL AND scope_path IS NOT NULL"
-                + path_sql + " ORDER BY importance DESC, id DESC LIMIT ?",
-                (*params, limit),
+                + path_sql + " ORDER BY importance DESC, id DESC",
+                params,
             ).fetchall()
         return [
             {"id": rid, "uid": uid, "decision": d, "reasoning": r, "path": sp,
@@ -1073,19 +1177,10 @@ class Memory:
             for rid, uid, d, r, sp, imp in rows
         ]
 
-    def active_decisions(self, min_importance: int = 2, limit: int = 15) -> list[dict]:
-        """Compact list of active project decisions for the session boot context."""
-        with sqlite_connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT id, prompt, scope_path, importance FROM memories "
-                "WHERE kind='decision' AND valid_until IS NULL AND importance >= ? "
-                "ORDER BY importance DESC, id DESC LIMIT ?",
-                (min_importance, limit),
-            ).fetchall()
-        return [
-            {"id": rid, "decision": d, "path": sp, "importance": imp, "stale": self.staleness(rid)}
-            for rid, d, sp, imp in rows
-        ]
+    def decisions_block(self) -> str:
+        """Every active decision, as written into AGENTS.md. Used as boot context."""
+        from cairn.memory import agents_md
+        return agents_md.body(self)
 
     def stale_decisions(self) -> list[dict]:
         with sqlite_connect(self.db_path) as conn:
@@ -1124,14 +1219,14 @@ class Memory:
         import json as _json
         row = conn.execute(
             "SELECT uid, timestamp, prompt, reasoning, alternatives_json, chose_because, "
-            "importance, scope_path, valid_until, invalidated_reason, superseded_by, anchor_commit "
-            "FROM memories WHERE id=? AND kind='decision'",
+            "importance, scope_path, valid_until, invalidated_reason, superseded_by, anchor_commit, "
+            "recorded_by FROM memories WHERE id=? AND kind='decision'",
             (num_id,),
         ).fetchone()
         if not row:
             return None
         (uid, ts, decision, reasoning, alts, chose, imp, path, valid_until,
-         inv_reason, superseded_by, anchor) = row
+         inv_reason, superseded_by, anchor, recorded_by) = row
         if not uid:
             uid = new_uid(datetime.fromisoformat(ts))
             conn.execute("UPDATE memories SET uid=? WHERE id=?", (uid, num_id))
@@ -1153,6 +1248,7 @@ class Memory:
             "valid_until": valid_until,
             "invalidated_reason": None if superseded_by is not None else inv_reason,
             "anchor_commit": anchor,
+            "recorded_by": recorded_by,
             "decision": decision, "reasoning": reasoning, "chose_because": chose,
             "alternatives": _json.loads(alts) if alts else [],
             "evidence": [
@@ -1181,7 +1277,7 @@ class Memory:
             target.write_text(text, encoding="utf-8", newline="\n")
         return target
 
-    def sync_decision_files(self) -> dict:
+    def sync_decision_files(self, refresh_agents_md: bool = True) -> dict:
         """Two-way sync between `.cairn/decisions/*.md` and the project DB.
 
         Files win: a file whose content differs from the DB (hand edit, or a
@@ -1203,17 +1299,19 @@ class Memory:
                     counts["errors"] += 1
                     print(f"cairn: skipping unreadable decision file {f.name}: {e}", file=sys.stderr)
 
+        touched_ids: set[int] = set()
         with sqlite_connect(self.db_path) as conn:
             for d in parsed:
                 row = conn.execute("SELECT id FROM memories WHERE uid=?", (d["uid"],)).fetchone()
                 if row is None:
-                    self._insert_decision_from_file(conn, d)
+                    touched_ids.add(self._insert_decision_from_file(conn, d))
                     counts["imported"] += 1
                     continue
                 current = self._decision_as_file_dict(conn, row[0]) or {}
                 if decision_files.render(current) != decision_files.render(d):
                     self._update_decision_from_file(conn, row[0], d)
                     counts["updated"] += 1
+                    touched_ids.add(row[0])
             for d in parsed:
                 self._link_supersedes_from_file(conn, d)
             conn.commit()
@@ -1227,6 +1325,11 @@ class Memory:
         for rid in missing:
             if self._export_decision(rid):
                 counts["exported"] += 1
+        if refresh_agents_md:
+            # imported/updated rows are pulled from committed files, usually
+            # alongside an already-current AGENTS.md; excluding them from the
+            # "missing" check only matters when that assumption doesn't hold
+            self._refresh_agents_md(exclude_ids=touched_ids)
         return counts
 
     def import_adrs(self, adr_dir: Path) -> dict:
@@ -1294,6 +1397,7 @@ class Memory:
             "valid_until": valid_until,
             "invalidated_reason": reason,
             "anchor_commit": d.get("anchor_commit"),
+            "recorded_by": d.get("recorded_by"),
         }
 
     @staticmethod

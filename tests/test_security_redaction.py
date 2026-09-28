@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from pathlib import Path
 
 from cairn.config.loader import load_config
 from cairn.memory.memory import Memory
@@ -19,7 +20,7 @@ def _mk_memory(tmpdir: str, **overrides) -> Memory:
         "enabled": overrides.pop("redact_enabled", True),
         "extra_patterns": overrides.pop("extra_patterns", []),
     }
-    return Memory(config)
+    return Memory(config, project_dir=Path(tmpdir))
 
 
 # --- module-level mask_secrets ---------------------------------------------

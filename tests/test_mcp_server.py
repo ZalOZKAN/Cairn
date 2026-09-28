@@ -1,4 +1,4 @@
-"""MCP server tool-handler tests, no stdio, just direct dispatch."""
+"""MCP server tool-handler tests: no stdio, just direct dispatch."""
 from __future__ import annotations
 
 import json
@@ -173,6 +173,7 @@ def _stub_helper(srv, payload: dict | None):
     if payload is None:
         srv.project.helper_call = lambda prompt, system=None: None  # type: ignore
     else:
+        srv.project.config["memory_helper_model"] = "stub/helper"
         srv.project.helper_call = lambda prompt, system=None: json.dumps(payload)  # type: ignore
 
 

@@ -42,12 +42,13 @@ def test_decisions_for_path_matches_ancestors_only(root):
 def test_mcp_initialize_has_instructions_and_new_tool(root):
     srv = CairnMCPServer(project_dir=root)
     init = srv._handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-    assert "decisions_for_path" in init["result"]["instructions"]
+    guide = init["result"]["instructions"]
+    assert "AGENTS.md" in guide and "record_decision" in guide and "memory_save" in guide
     srv.project.memory.record_decision("Use zod for validation", scope_path="src/api")
     out = srv._call_tool("decisions_for_path", {"path": "src/api/handler.ts"})
     assert "zod" in out
     boot = srv._call_tool("memory_boot", {})
-    assert "Active decisions" in boot and "zod" in boot
+    assert "Project decisions" in boot and "### `src/api/`" in boot and "Use zod for validation" in boot
 
 
 def test_pretooluse_hook_emits_additional_context(root):

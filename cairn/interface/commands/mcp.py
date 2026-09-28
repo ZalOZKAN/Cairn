@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -12,7 +13,7 @@ mcp_app = typer.Typer(help="Run Cairn as an MCP server for any MCP host")
 console = Console()
 
 _ALL_HOSTS = [
-    "claude-code", "cursor", "antigravity", "codex", "opencode", "windsurf", "zed", "generic",
+    "claude-code", "cursor", "antigravity", "codex", "opencode", "windsurf", "zed", "gemini-cli", "generic",
 ]
 
 # Config snippet shape per host, verified against each host's own docs
@@ -28,6 +29,9 @@ _JSON_SNIPPET_BUILDERS = {
     "cursor": lambda cmd: {"mcpServers": {"cairn": {"command": cmd, "args": ["mcp", "serve"]}}},
     "antigravity": lambda cmd: {"mcpServers": {"cairn": {"command": cmd, "args": ["mcp", "serve"]}}},
     "windsurf": lambda cmd: {"mcpServers": {"cairn": {"command": cmd, "args": ["mcp", "serve"]}}},
+    # Verified live (gemini-cli 0.61.0, 2026-09-27): `gemini mcp add` writes
+    # exactly this shape to .gemini/settings.json.
+    "gemini-cli": lambda cmd: {"mcpServers": {"cairn": {"command": cmd, "args": ["mcp", "serve"]}}},
     "generic": lambda cmd: {"mcpServers": {"cairn": {"command": cmd, "args": ["mcp", "serve"]}}},
     # Zed: "context_servers" key, not "mcpServers" (zed.dev/docs/ai/mcp).
     "zed": lambda cmd: {"context_servers": {"cairn": {"command": cmd, "args": ["mcp", "serve"]}}},
@@ -36,7 +40,7 @@ _JSON_SNIPPET_BUILDERS = {
     "opencode": lambda cmd: {"mcp": {"cairn": {"type": "local", "command": [cmd, "mcp", "serve"]}}},
 }
 
-# Opt-in SessionStart hook recipes. An earlier project decision rejected
+# Opt-in hook recipes. An earlier project decision rejected
 # IDE hooks as a *default* trigger (5/6 against) but explicitly allowed
 # doc-only opt-in. type="command" (not "mcp_tool"): Claude Code has a
 # documented race where SessionStart mcp_tool hooks can fire before the MCP
@@ -52,9 +56,28 @@ _HOOK_SNIPPETS = {
                 {"matcher": "Edit|Write|MultiEdit",
                  "hooks": [{"type": "command", "command": f"{cmd} memory for-path --hook"}]}
             ],
+            # Flags decision-like language in the user's own message ("we
+            # decided...", "switch to X"), even when nobody asked to record it.
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": f"{cmd} memory detect"}]}
+            ],
             # Reminds the agent to record decisions after many unrecorded edits.
             "Stop": [
                 {"hooks": [{"type": "command", "command": f"{cmd} memory nudge"}]}
+            ],
+        }
+    }, indent=2),
+    # Gemini CLI: only the detector, the one hook checked live (0.61.0,
+    # 2026-09-28): BeforeAgent receives {session_id, transcript_path, cwd,
+    # hook_event_name, timestamp, prompt}, and its additionalContext reached
+    # the request sent to the model. The AfterAgent equivalent of the Stop
+    # nudge (exit code 2 + stderr = retry turn) is documented but has not
+    # been run against a real model response yet, so it is not registered.
+    "gemini-cli": lambda cmd: json.dumps({
+        "hooks": {
+            "BeforeAgent": [
+                {"matcher": "*",
+                 "hooks": [{"name": "cairn-detect", "type": "command", "command": f"{cmd} memory detect"}]}
             ],
         }
     }, indent=2),
@@ -87,6 +110,15 @@ _HOST_NOTES = {
         "OpenCode's schema, not the common mcpServers one."
     ),
     "windsurf": "Add the block below to ~/.codeium/windsurf/mcp_config.json.",
+    "gemini-cli": (
+        'Add the block below to .gemini/settings.json (project) or ~/.gemini/settings.json '
+        '(global), or run `gemini mcp add cairn -- {cmd} mcp serve`. Gemini CLI reads only '
+        "GEMINI.md by default, not AGENTS.md; `cairn init`/`cairn sync` add AGENTS.md to "
+        "context.fileName automatically once a GEMINI.md or .gemini/ shows you use it. "
+        "Gemini CLI ignores this folder's .gemini/settings.json (AGENTS.md and the Cairn MCP "
+        "server) until the folder is trusted: run `gemini` here once and choose Trust folder, "
+        "or set GEMINI_CLI_TRUST_WORKSPACE=true for headless runs (--skip-trust is not enough)."
+    ),
     "zed": (
         'Add the block below to ~/.config/zed/settings.json. Note the key is '
         '"context_servers", not "mcpServers": Zed-specific.'
@@ -101,6 +133,168 @@ def _tool_names() -> list[str]:
     return [t["name"] for t in CairnMCPServer()._tools]
 
 
+# ---- one-command setup ----------------------------------------------------
+# A host's own install directory existing under the home directory (verified
+# against this machine for claude-code and against each host's docs for the
+# rest, 2026-09-27). Only proof of an install at some point, not current use;
+# good enough to decide whether setup is worth offering.
+_HOME_MARKERS = {
+    "claude-code": ".claude",
+    "cursor": ".cursor",
+    "antigravity": ".antigravity",
+    "codex": ".codex",
+    "opencode": ".config/opencode",
+    "windsurf": ".codeium/windsurf",
+    "zed": ".config/zed",
+}
+
+
+def detect_hosts(home: Path | None = None, which=shutil.which) -> list[str]:
+    """Installed hosts, by their own marker directory under `home`. Gemini
+    CLI is checked by its executable on PATH instead (`which`, overridable
+    for tests the same way `home` is): `~/.gemini` also holds Antigravity's
+    knowledge folder (verified on a real machine that has Antigravity but not
+    Gemini CLI, 2026-09-27), so a bare `~/.gemini` directory cannot tell the
+    two apart."""
+    home = home or Path.home()
+    found = [h for h, rel in _HOME_MARKERS.items() if (home / rel).is_dir()]
+    if which("gemini"):
+        found.append("gemini-cli")
+    return found
+
+
+def _load_json_object(path: Path) -> dict:
+    """`{}` for a missing file; raises on one that exists but will not parse,
+    so a caller never merges into (and overwrites) a file it could not read."""
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} is not plain JSON ({exc}); comments are not supported here") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def _install_mcp_servers_json(path: Path, cairn_path: str) -> str:
+    """Merge Cairn into a `{"mcpServers": {...}}`-shaped file. Every other
+    key, and every other server already there, is left untouched. Returns
+    "added", "updated" (an existing cairn entry pointed elsewhere), or
+    "already" (no change needed)."""
+    data = _load_json_object(path)
+    servers = data.setdefault("mcpServers", {})
+    entry = {"command": cairn_path, "args": ["mcp", "serve"]}
+    if servers.get("cairn") == entry:
+        return "already"
+    action = "updated" if "cairn" in servers else "added"
+    servers["cairn"] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return action
+
+
+def install_mcp_json(project_dir: Path, cairn_path: str) -> str:
+    """Merge Cairn into `.mcp.json` (Claude Code project scope)."""
+    return _install_mcp_servers_json(project_dir / ".mcp.json", cairn_path)
+
+
+def install_gemini_mcp_json(project_dir: Path, cairn_path: str) -> str:
+    """Merge Cairn into `.gemini/settings.json`'s `mcpServers` (verified live
+    against `gemini mcp add`, 0.61.0, 2026-09-27: same shape and file `gemini
+    mcp add --scope project` itself writes to)."""
+    return _install_mcp_servers_json(project_dir / ".gemini" / "settings.json", cairn_path)
+
+
+_HOOK_SETTINGS = {
+    "claude-code": Path(".claude") / "settings.json",
+    "gemini-cli": Path(".gemini") / "settings.json",
+}
+
+
+def hook_exe(cairn_path: str, host: str, windows: bool = os.name == "nt") -> str:
+    """`cairn_path` as the first word of a hook command. Unlike an MCP server
+    entry (spawned directly), a hook command is one string run through a
+    shell: bash, except Gemini CLI on Windows, which uses PowerShell (its hook
+    runner, 0.61.0). Forward slashes read the same to both, where bash would
+    eat backslashes; a path with spaces needs each shell's own quoting, and
+    PowerShell also needs `&` to call a quoted path."""
+    exe = cairn_path.replace("\\", "/") if windows else cairn_path
+    if not any(c.isspace() or c in "'\"&;()$`" for c in exe):
+        return exe
+    if host == "gemini-cli" and windows:
+        return "& '" + exe.replace("'", "''") + "'"
+    return "'" + exe.replace("'", "'\\''") + "'"
+
+
+def _cairn_hook_groups(cairn_path: str, host: str = "claude-code") -> dict[str, dict]:
+    """{event: hook-group} straight from the host's recipe (kept whole, e.g.
+    Claude Code's PreToolUse "matcher" field), the one place both the
+    installer and `cairn doctor` read this from, so they cannot drift apart."""
+    recipe = json.loads(_HOOK_SNIPPETS[host](hook_exe(cairn_path, host)))
+    return {event: groups[0] for event, groups in recipe["hooks"].items()}
+
+
+def _hook_status(project_dir: Path, cairn_path: str, host: str) -> dict[str, bool]:
+    """{event: is cairn's exact command for it already present}. A missing or
+    unparseable settings file reads as all False rather than raising, since
+    this is a read-only status check."""
+    try:
+        data = _load_json_object(project_dir / _HOOK_SETTINGS[host])
+    except ValueError:
+        data = {}
+    hooks = data.get("hooks", {})
+    present = set()
+    for event, groups in hooks.items() if isinstance(hooks, dict) else []:
+        for group in groups if isinstance(groups, list) else []:
+            for h in group.get("hooks", []) if isinstance(group, dict) else []:
+                if h.get("command"):
+                    present.add((event, h["command"]))
+    return {
+        event: (event, group["hooks"][0]["command"]) in present
+        for event, group in _cairn_hook_groups(cairn_path, host).items()
+    }
+
+
+def _install_hooks(project_dir: Path, cairn_path: str, host: str) -> str:
+    """Merge Cairn's hook groups into the host's project settings file,
+    appending to each event's own list rather than replacing it, so any hooks
+    the user already configured for the same event are kept. Returns "added"
+    or "already" (every command was already present)."""
+    path = project_dir / _HOOK_SETTINGS[host]
+    data = _load_json_object(path)
+    hooks = data.setdefault("hooks", {})
+    status = _hook_status(project_dir, cairn_path, host)
+    changed = False
+    for event, group in _cairn_hook_groups(cairn_path, host).items():
+        if status[event]:
+            continue
+        hooks.setdefault(event, []).append(group)
+        changed = True
+    if not changed:
+        return "already"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return "added"
+
+
+def claude_hook_status(project_dir: Path, cairn_path: str) -> dict[str, bool]:
+    return _hook_status(project_dir, cairn_path, "claude-code")
+
+
+def install_claude_hooks(project_dir: Path, cairn_path: str) -> str:
+    """Cairn's hooks in `.claude/settings.json`."""
+    return _install_hooks(project_dir, cairn_path, "claude-code")
+
+
+def gemini_hook_status(project_dir: Path, cairn_path: str) -> dict[str, bool]:
+    return _hook_status(project_dir, cairn_path, "gemini-cli")
+
+
+def install_gemini_hooks(project_dir: Path, cairn_path: str) -> str:
+    """Cairn's hooks in `.gemini/settings.json` (same nested `hooks` shape as
+    Claude Code's, checked against Gemini CLI 0.61.0's own hooks reference)."""
+    return _install_hooks(project_dir, cairn_path, "gemini-cli")
+
+
 @mcp_app.command("serve")
 def mcp_serve():
     """Start the Cairn MCP server over stdio (Claude Code-compatible)."""
@@ -113,11 +307,11 @@ def mcp_serve():
 def mcp_config(
     host: str = typer.Option(
         "claude-code", "--host", "-h",
-        help="claude-code | cursor | antigravity | codex | opencode | windsurf | zed | generic",
+        help=" | ".join(_ALL_HOSTS),
     ),
     with_hooks: bool = typer.Option(
         False, "--with-hooks",
-        help="Also print an opt-in SessionStart hook recipe (doc-only, never installs anything)",
+        help="Also print an opt-in hook recipe (doc-only, never installs anything)",
     ),
     output: Path = typer.Option(
         None, "--output", "-o",
@@ -148,11 +342,11 @@ def mcp_config(
 
     if with_hooks:
         console.print(
-            "\n[bold]Optional: SessionStart hook (opt-in, doc-only, this "
+            "\n[bold]Optional: hooks (opt-in, doc-only, this "
             "command does not modify any config file for you):[/bold]"
         )
         recipe = _HOOK_SNIPPETS.get(host)
         if recipe is None:
             console.print(f"[dim]{_HOOK_UNVERIFIED_NOTE}[/dim]", markup=False)
         else:
-            console.print(recipe(cairn_path), markup=False, soft_wrap=True)
+            console.print(recipe(hook_exe(cairn_path, host)), markup=False, soft_wrap=True)

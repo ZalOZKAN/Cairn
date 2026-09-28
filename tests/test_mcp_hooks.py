@@ -1,4 +1,4 @@
-"""cairn mcp config --with-hooks, Competitive Response Plan Step 6."""
+"""cairn mcp config --with-hooks: Competitive Response Plan Step 6."""
 from __future__ import annotations
 
 import json
@@ -28,12 +28,26 @@ def test_claude_code_hook_uses_command_type_not_mcp_tool():
 def test_claude_code_hook_is_valid_json():
     result = runner.invoke(app, ["mcp", "config", "--host", "claude-code", "--with-hooks"])
     # extract the hook JSON block (starts at the second '{' after "Optional:")
-    marker = "Optional: SessionStart hook"
+    marker = "Optional: hooks"
     idx = result.stdout.index(marker)
     tail = result.stdout[idx:]
     json_start = tail.index("{")
     parsed = json.loads(tail[json_start:])
     assert parsed["hooks"]["SessionStart"][0]["hooks"][0]["type"] == "command"
+    assert parsed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("memory detect")
+
+
+def test_gemini_cli_hook_recipe_is_valid_json_with_only_the_detector():
+    result = runner.invoke(app, ["mcp", "config", "--host", "gemini-cli", "--with-hooks"])
+    assert result.exit_code == 0
+    tail = result.stdout[result.stdout.index("Optional: hooks"):]
+    parsed = json.loads(tail[tail.index("{"):])
+    assert list(parsed["hooks"]) == ["BeforeAgent"]
+    group = parsed["hooks"]["BeforeAgent"][0]
+    assert group["matcher"] == "*"
+    assert group["hooks"][0]["type"] == "command"
+    assert group["hooks"][0]["command"].endswith("memory detect")
+    assert "GEMINI_CLI_TRUST_WORKSPACE" in result.stdout
 
 
 def test_unverified_host_says_so_instead_of_guessing():

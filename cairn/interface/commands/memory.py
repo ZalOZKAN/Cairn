@@ -69,7 +69,7 @@ def memory_boot(
     from cairn.memory.injector import ContextInjector
 
     injector = ContextInjector()
-    decisions = Project(load_session=False).memory.active_decisions()
+    decisions = Project(load_session=False).memory.decisions_block()
     context = injector.build(fmt=fmt, include_memory=memory or None, decisions=decisions)
     token_est = injector.estimate_tokens(fmt)
 
@@ -324,6 +324,8 @@ def memory_for_path(
             return
     project = Project(project_dir=project_dir, load_session=False)
     rows = project.memory.decisions_for_path(path)
+    if hook and payload.get("session_id"):
+        rows = _unseen_this_session(project_dir, payload["session_id"], rows)
     text = format_brief(rows, f"Cairn decisions that apply to {path}:")
     if hook:
         if text:
@@ -332,13 +334,90 @@ def memory_for_path(
                 "additionalContext": text + "\nFollow these, or ask the user before going against one.",
             }}))
         return
-    console.print(text or f"[dim]No path-scoped decisions for {path}.[/dim]", markup=False)
+    console.print(text or f"No path-scoped decisions for {path}.", markup=False)
+
+
+@memory_app.command("for-diff")
+def memory_for_diff(
+    spec: str = typer.Argument("", help="Git revision or range, e.g. main..HEAD (default: all uncommitted work)"),
+    staged: bool = typer.Option(False, "--staged", help="Only what is staged"),
+):
+    """Show the active decisions that apply to the files a diff changes."""
+    from cairn.core import Project
+    from cairn.memory.decision_files import format_brief
+    from cairn.memory.diff_scope import changed_paths, decisions_for_diff
+
+    if spec and staged:
+        console.print("[red]Give a revision range or --staged, not both.[/red]")
+        raise typer.Exit(code=2)
+    project = Project(load_session=False)
+    paths = changed_paths(project.project_dir, spec, staged)
+    if paths is None:
+        console.print(f"[red]Could not read the diff{f' for {spec}' if spec else ''}: "
+                      "not a git repository, or an unknown revision.[/red]")
+        raise typer.Exit(code=1)
+    what = spec or ("the staged changes" if staged else "your uncommitted changes")
+    rows = decisions_for_diff(project.memory, paths)
+    text = format_brief(rows, f"Cairn decisions that apply to {what} ({len(paths)} changed files):")
+    console.print(text or f"No path-scoped decisions apply to {what} ({len(paths)} changed files).",
+                  markup=False, soft_wrap=True)
+
+
+def _unseen_this_session(project_dir: Path, session_id: str, rows: list[dict]) -> list[dict]:
+    """Keep only decisions not yet shown in this session. Claude Code fires
+    PreToolUse before every Edit, so without this the same reminder is
+    re-injected on each edit (measured: the main source of Cairn's extra
+    turns). State is per session and capped to the most recent sessions."""
+    import json
+    state_file = project_dir / ".cairn" / "persistence" / "hook-seen.json"
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    seen = set(state.get(session_id, []))
+    fresh = [r for r in rows if r["uid"] not in seen]
+    if fresh:
+        state.pop(session_id, None)
+        state[session_id] = sorted(seen | {r["uid"] for r in fresh})
+        state = dict(list(state.items())[-20:])
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+    return fresh
+
+
+@memory_app.command("detect")
+def memory_detect():
+    """Claude Code UserPromptSubmit / Gemini CLI BeforeAgent hook (reads hook
+    JSON on stdin): if the user's message reads like a decision stated in
+    passing, remind the agent to record it. Silent otherwise; no LLM call."""
+    import json
+    import sys
+    from cairn.memory.capture import decision_language_reminder
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
+        return
+    project_dir = Path(payload.get("cwd") or Path.cwd())
+    if not (project_dir / ".cairn").is_dir():
+        return
+    text = decision_language_reminder(payload)
+    if text:
+        # Echo the host's own event name (Claude Code: UserPromptSubmit,
+        # Gemini CLI: BeforeAgent); both put additionalContext in front of
+        # the model this turn (verified live for Gemini CLI 0.61.0).
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": payload.get("hook_event_name") or "UserPromptSubmit",
+            "additionalContext": text,
+        }}))
 
 
 @memory_app.command("nudge")
 def memory_nudge():
     """Claude Code Stop hook (reads hook JSON on stdin): remind the agent to
-    record decisions after many edits with none recorded. Silent otherwise."""
+    record decisions after many edits with none recorded. Silent otherwise.
+    Gemini CLI's AfterAgent is documented to retry on the same exit code 2,
+    unverified, so Cairn does not register it there."""
     import json
     import sys
     from cairn.config.loader import load_config
@@ -356,7 +435,9 @@ def memory_nudge():
     threshold = int(((config.get("memory") or {}).get("nudge") or {}).get("edits", 8))
     msg = nudge_message(payload, cairn_dir / "persistence" / "nudge-state.json", threshold)
     if msg:
-        # Exit code 2 + stderr: Claude Code shows stderr to the model and keeps going.
+        # Exit code 2 + stderr: Claude Code shows stderr to the model and keeps
+        # going; Gemini CLI's AfterAgent rejects the response and retries with
+        # stderr as the new prompt.
         print(msg, file=sys.stderr)
         raise typer.Exit(code=2)
 
@@ -400,7 +481,14 @@ def memory_capture(
             f"   [dim]commit:[/dim] {p.get('commit') or '?'}",
             title="Proposed decision", border_style="cyan",
         ))
-        if typer.confirm("Record it?", default=False):
+        try:
+            answer = typer.confirm("Record it?", default=False)
+        except typer.Abort:
+            # A closed/absent stdin raises here rather than returning the
+            # default; nothing left to ask, so stop instead of raising once
+            # per remaining proposal.
+            break
+        if answer:
             evidence = [{"source": f"commit {p['commit']}", "claim": p["decision"]}] if p.get("commit") else None
             project.memory.record_decision(
                 p["decision"],
@@ -469,6 +557,45 @@ def memory_confirm(mem_id: str = typer.Argument(..., help="Decision id")):
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
     console.print("[green]Confirmed.[/green]" if ok else f"[yellow]No decision #{mem_id}.[/yellow]")
+
+
+@memory_app.command("import-native")
+def memory_import_native(
+    source: list[str] = typer.Option(
+        [], "--source", "-s",
+        help="claude, cursor (repeatable; default: both)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Import without asking"),
+):
+    """Import what another tool's own memory already learned (Claude Code
+    auto-memory, Cursor rules) as Cairn decisions, so every host sees them
+    through AGENTS.md. Shows candidates and asks before writing anything;
+    already-imported, unchanged items are skipped."""
+    from cairn.core import Project
+    from cairn.memory import bridge
+
+    for s in source:
+        if s not in bridge.PARSERS:
+            console.print(f"[red]Unknown source '{s}'. Choose from: {', '.join(bridge.PARSERS)}[/red]")
+            raise typer.Exit(code=1)
+    project = Project(load_session=False)
+    items = bridge.candidates(project.project_dir, source or None)
+    if not items:
+        console.print("[green]Nothing new to import.[/green]")
+        return
+    console.print(f"[bold]{len(items)} candidate(s):[/bold]")
+    for i in items:
+        console.print(f"  [{i['source']}] {i['decision']}", markup=False)
+    if not yes:
+        try:
+            proceed = typer.confirm(f"Import {len(items)} as Cairn decisions?")
+        except typer.Abort:
+            proceed = False  # closed/absent stdin: decline, don't crash
+        if not proceed:
+            console.print("[yellow]Cancelled.[/yellow]")
+            return
+    for i in items:
+        project.memory.record_decision(i["decision"], reasoning=i["reasoning"], recorded_by=i["source"])
+    console.print(f"[green]Imported {len(items)} decision(s).[/green]")
 
 
 @memory_app.command("import-adr")

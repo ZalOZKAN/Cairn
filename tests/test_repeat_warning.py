@@ -16,7 +16,7 @@ def _mk_memory(tmpdir: str, **overrides) -> Memory:
     config["memory"]["global_db_path"] = overrides.pop("global_db_path", f"{tmpdir}/global.db")
     config["memory"]["async_store"] = False
     config["memory"].setdefault("dedup", {})["enabled"] = False
-    return Memory(config)
+    return Memory(config, project_dir=Path(tmpdir))
 
 
 def test_finds_rejected_alternative():

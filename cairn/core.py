@@ -1,5 +1,5 @@
 """
-Cairn core, Project facade.
+Cairn core: Project facade.
 
 Cairn is NOT an LLM runtime. It is a portable `.cairn/` folder that any AI
 coding agent (Claude Code, Cursor, Antigravity, custom CLI) can read from
@@ -33,6 +33,7 @@ class Project:
         config_path: str | Path | None = None,
         project_dir: Path | None = None,
         load_session: bool = True,
+        refresh_agents_md: bool = True,
     ):
         self.project_dir = project_dir or Path.cwd()
         # If no explicit config_path and the project dir has one, use it.
@@ -42,7 +43,7 @@ class Project:
                 config_path = candidate
         self.config: dict[str, Any] = load_config(config_path)
         self.memory = Memory(self.config, project_dir=self.project_dir)
-        self.memory.sync_decision_files()
+        self.memory.sync_decision_files(refresh_agents_md=refresh_agents_md)
         self.security = SecurityGuard(self.config)
         self.session = SessionManager(self.project_dir)
         self.injector = ContextInjector(self.project_dir)

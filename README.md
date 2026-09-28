@@ -27,16 +27,51 @@ that lives next to your code.
 ```bash
 pip install cairn-memory
 cd ~/my-project
-cairn init
-cairn mcp config --host claude-code   # (or cursor, antigravity, codex, opencode, windsurf, zed, generic)
+cairn init                             # also adds a decisions block to AGENTS.md
 ```
 
-Paste the printed config block into your IDE's MCP config, restart, and the
-agent gets fourteen memory tools: `memory_recall`, `memory_store`, `memory_invalidate`,
-`record_decision`, `decisions_for_path`, `memory_thread`, `check_approach`,
-and friends, without you writing a line of glue code.
+`cairn init` alone already gives every agent your decisions: they are kept
+in a managed block of `AGENTS.md`, the file Antigravity, Cursor, Claude Code,
+Codex and Copilot read. Gemini CLI reads only `GEMINI.md` by default; once a
+project shows you use it (a `GEMINI.md` or `.gemini/` already there), `cairn
+init`/`cairn sync` also add AGENTS.md to its `context.fileName`, no manual
+settings edit needed (Gemini CLI applies a folder's `.gemini/settings.json`
+only once you trust the folder: run `gemini` there once and choose Trust
+folder, or set `GEMINI_CLI_TRUST_WORKSPACE=true` in headless runs). If it
+detects Claude Code or Gemini CLI, it also asks
+once to register the MCP server and hooks for this
+project (run `cairn init` again later to be asked again), so the agent gets fourteen memory tools (`memory_recall`,
+`memory_store`, `memory_invalidate`, `record_decision`, `decisions_for_path`,
+`memory_thread`, `check_approach`, and friends) after just a restart, no
+config file to hand-edit. Any other
+host it detects (Cursor, Antigravity, Codex, ...) gets a one-line pointer to
+`cairn mcp config --host <name>`: print a snippet, paste it into that host's
+own MCP config, restart.
 
 ![Claude Code demo](docs/demos/claude-code.gif)
+
+---
+
+## Switch tools, keep the memory
+
+Start in Antigravity, continue in Claude Code, finish in Cursor. What moves
+with the project:
+
+- **Decisions.** Every active decision is in `AGENTS.md`, in full, the moment
+  it is recorded, whichever tool recorded it (each record notes its source).
+  Superseded and invalidated decisions drop out, so the file never carries
+  two contradicting rules the way a hand-kept notes file does.
+- **Where you left off.** `.cairn/persistence/session-handoff.md` holds the
+  last agent's note (what was done, the next step) plus facts nobody has to
+  remember to write: branch, uncommitted files, last commits, latest
+  decisions. Those are refreshed whenever the MCP host closes.
+- **What a tool already learned on its own.** `cairn memory import-native`
+  reads Claude Code's per-project auto-memory or Cursor rules and offers them
+  as ordinary Cairn decisions, so a fact one tool picked up before Cairn was
+  even in the loop still reaches the rest. Gemini CLI's own memory is free-form
+  markdown the model edits itself, so it is not a source.
+
+`cairn doctor` shows what is wired up in the current project and what is off.
 
 ---
 
@@ -120,9 +155,11 @@ my-project/
     └── persistence/
         ├── memory.db           # SQLite index (gitignored, rebuildable: cairn memory reindex)
         ├── state.json          # current task / status / handoff pointer
-        ├── session-handoff.md  # "where I left off"
+        ├── session-handoff.md  # "where I left off", for the next session in any tool
         ├── context-manifest.md # ~500-token project summary
         └── memory/             # long-form facts / decisions
+
+AGENTS.md                       # your file; Cairn manages only its <!-- cairn:begin/end --> block
 
 ~/.cairn/
 ├── global.db                  # cross-project memory: lives outside any repo
@@ -150,12 +187,16 @@ You don't have to pick one: they compose.
 
 | Tier | How it works | IDE-side setup |
 |---|---|---|
-| **File format** | Reference `.cairn/SYSTEM.md` or files in `.cairn/decisions/` in any IDE that lets you attach files. | None |
-| **CLI helpers** | `cairn memory boot --copy` → clipboard. `cairn memory check "<approach>"` → print. Pipe into any tool. | None |
-| **MCP server** | `cairn mcp serve` over stdio. The IDE calls `memory_recall`, `memory_store`, `record_decision` as tools. | One config block, JSON or TOML depending on host (see `cairn mcp config`) |
+| **AGENTS.md** | Every active decision, in full, in a managed block of `AGENTS.md`, rewritten on every change. Read at session start by Antigravity, Cursor, Codex and Copilot; by Claude Code when the project has no CLAUDE.md (if it has one, Cairn adds `@AGENTS.md` to it); by Gemini CLI once Cairn adds AGENTS.md to its `context.fileName` (automatic once the project shows you use Gemini CLI). | None: `cairn init` / `cairn sync` |
+| **CLI helpers** | `cairn decide`, `cairn handoff`, `cairn memory check "<approach>"`: the same as the MCP tools, for agents without MCP or for you. | None |
+| **MCP server** | `cairn mcp serve` over stdio. The IDE calls `memory_recall`, `record_decision`, `decisions_for_path` as tools. | Claude Code and Gemini CLI: `cairn init` offers to register it. Others: one config block, JSON or TOML depending on host (see `cairn mcp config`) |
+| **Hooks (optional)** | Claude Code: reminds the agent of a file's decisions right before it edits the file, once per decision per session, and flags a decision you state in passing ("from now on we use X") so it gets recorded. Gemini CLI: the second one only. | Registered by `cairn init` together with the MCP server, or by hand: `cairn mcp config --host claude-code --with-hooks` (or `--host gemini-cli`) |
 
-The first two require zero IDE support. The third needs one config block
-per host, Cairn itself stays a single binary.
+AGENTS.md works in every agent; the others add to them. Nothing in the
+block is truncated. It is a pure function of `.cairn/decisions/`, so it is
+identical on every machine; `cairn check` fails CI if it drifts. The cost
+grows with the number of active decisions, like any always-loaded file;
+Cairn keeps it to the active ones.
 
 > Cairn does not choose models for your IDE. The IDE chooses. Cairn gives
 > it the memory and the prompts; the IDE does the thinking.
@@ -224,13 +265,23 @@ If you want any of those, your IDE already has it. Cairn feeds it memory.
 
 ```bash
 # Initialize
-cairn init                              # create .cairn/ in current dir (cloud helper model)
-cairn init --profile local              # same, but the helper model runs on a local Ollama server
+cairn init                              # create .cairn/ and the AGENTS.md decisions block (no helper model)
+cairn init --profile cloud              # same, with the optional helper model on Groq
+cairn init --profile local              # same, with the optional helper model on a local Ollama server
+cairn init --yes                        # also register detected hosts without asking
+cairn doctor                            # what is wired up here, and what is off
 
 # MCP server (what your IDE calls)
 cairn mcp serve                         # stdio JSON-RPC 2.0, Claude Code-compatible
 cairn mcp config --host claude-code     # print client config snippet
 cairn mcp config --host claude-code --with-hooks  # + opt-in SessionStart + PreToolUse hook recipe (doc-only)
+cairn mcp config --host gemini-cli --with-hooks   # + opt-in BeforeAgent decision-detector recipe (doc-only)
+
+# Decisions and handoff (same as the MCP tools, for any shell)
+cairn decide "Money is integer cents" --why "float rounding" --rejected float --because rounding --path shop
+cairn handoff "Added the price field" --next "Write apply_discount in shop/pricing.py"
+cairn sync                              # rewrite the AGENTS.md block (also automatic on every decision change)
+cairn check                             # exit 1 if the AGENTS.md block is missing or out of date (for CI)
 
 # Memory
 cairn memory boot                       # session boot context
@@ -243,9 +294,10 @@ cairn memory manifest                   # generate context-manifest.md (uses hel
 cairn memory status                     # current task + handoff
 cairn memory dashboard --open           # single-file HTML decision dashboard
 cairn memory check "<approach>"         # has this already been rejected or abandoned?
+cairn memory for-diff main..HEAD        # which decisions apply to the files this diff changes (no arg: uncommitted work)
 ```
 
-A longer reference lives in [docs/CLI.md](file:///c:/Projects/Cairn/docs/CLI.md).
+A longer reference lives in [docs/CLI.md](docs/CLI.md).
 
 ---
 

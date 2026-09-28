@@ -21,7 +21,7 @@ def populated_db():
             "db_path": str(db),
             "async_store": False,
             "global_db_path": str(Path(td) / "global.db"),
-        }})
+        }}, project_dir=Path(td))
         a = m.record_decision(
             "Use SQLite for local dev",
             reasoning="No infra to manage",

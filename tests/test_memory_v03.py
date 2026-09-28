@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -22,7 +23,7 @@ def _mk_memory(tmpdir: str, **overrides) -> Memory:
     config["memory"]["async_store"] = overrides.pop("async_store", False)
     config["memory"]["backend"] = overrides.pop("backend", "sqlite")
     config["memory"].setdefault("decay", {})["enabled"] = overrides.pop("decay", True)
-    return Memory(config)
+    return Memory(config, project_dir=Path(tmpdir))
 
 
 # --- Decay ---------------------------------------------------------------
@@ -174,7 +175,7 @@ def test_dedup_importance_limit_and_decision_exclusion():
             imp = conn.execute("SELECT importance FROM memories WHERE id=1").fetchone()[0]
         assert imp == 5
 
-        dec_id = mem.record_decision("limit test prompt", reasoning="limit test response")
+        mem.record_decision("limit test prompt", reasoning="limit test response")
         mem.store("limit test prompt", "limit test response")
         with sqlite3.connect(mem.db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
