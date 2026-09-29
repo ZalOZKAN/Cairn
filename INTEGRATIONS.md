@@ -123,16 +123,26 @@ Below: what to paste *where*, plus any host-specific gotchas.
   project already has a `GEMINI.md` or `.gemini/settings.json`; `cairn
   doctor` reports whether it is missing.
 - **The folder must be trusted, or all of that is silently ignored
-  (verified 2026-09-28, 0.61.0).** In an untrusted folder Gemini CLI does not
-  load the project's `.gemini/settings.json` at all: `context.fileName`
-  (AGENTS.md is not auto-loaded) and `mcpServers` (Cairn's MCP server does
-  not connect) both do nothing, with no warning in headless runs. Measured,
-  not assumed: the same folder asked for a passphrase written only in
-  AGENTS.md answered `UNKNOWN` untrusted and the passphrase once trusted, and
-  a request to call a Cairn MCP tool made the model improvise ~11 shell
-  commands untrusted versus one direct `mcp_cairn_decisions_for_path` call
-  trusted. Interactively, run `gemini` in the project once and choose Trust
-  folder. Headless or CI: set `GEMINI_CLI_TRUST_WORKSPACE=true`.
+  (verified 2026-09-28, 0.61.0; the mechanism read from source 2026-09-29).**
+  In an untrusted folder Gemini CLI does not load the project's
+  `.gemini/settings.json` at all: `context.fileName` (AGENTS.md is not
+  auto-loaded) and `mcpServers` (Cairn's MCP server does not connect) both do
+  nothing, with no warning in headless runs. Measured, not assumed: the same
+  folder asked for a passphrase written only in AGENTS.md answered `UNKNOWN`
+  untrusted and the passphrase once trusted, and a request to call a Cairn
+  MCP tool made the model improvise ~11 shell commands untrusted versus one
+  direct `mcp_cairn_decisions_for_path` call trusted. The block goes deeper
+  than that one setting: read from the installed 0.61.0 bundle,
+  `MemoryContextManager.discoverMemoryPaths()` skips the project-memory scan
+  (where GEMINI.md and every name in `context.fileName` are found) entirely
+  when `isTrustedFolder()` is false, so GEMINI.md itself, not just the
+  setting that would add AGENTS.md to it, goes unread; a hand-written
+  `@AGENTS.md` import line inside a committed GEMINI.md would fare no
+  better. The private per-user memory folder
+  (`~/.gemini/tmp/<project id>/memory/`) is a separate path list the same
+  function does not gate this way. Interactively, run `gemini` in the
+  project once and choose Trust folder. Headless or CI: set
+  `GEMINI_CLI_TRUST_WORKSPACE=true`.
   `--skip-trust` is NOT equivalent: it only clears the "not running in a
   trusted directory" exit (and lets `--approval-mode yolo` apply), the
   folder stays untrusted for settings and MCP. Cairn's own benchmark ran its
@@ -204,9 +214,25 @@ Below: what to paste *where*, plus any host-specific gotchas.
   users) hit a terminal `You have exhausted your daily quota on this model`
   (`TerminalQuotaError`, reported limit 20) within a few real calls. The
   "Please retry in Ns" text that comes with it is misleading noise, the
-  quota is daily (resets at midnight Pacific). `--model auto` spends it
-  faster: it also calls a `gemini-3.5-flash-lite` router each turn. For
-  automated or benchmark use, a pay-as-you-go API key is the reliable path.
+  quota is daily; still exhausted 15+ hours after the failure that first hit
+  it (checked 2026-09-28 21:37 and 21:43 UTC, i.e. before the doc's assumed
+  midnight-Pacific/07:00-UTC reset), so treat "resets at midnight Pacific" as
+  the vendor's claim, not independently confirmed. `--model auto` spends it
+  faster: it also calls a `gemini-3.5-flash-lite` router each turn.
+- **Pinning `--model gemini-3.5-flash-lite` does not stay pinned.** Checked
+  live (2026-09-28): a one-turn, no-tool-call prompt ran entirely on
+  `gemini-3.5-flash-lite` and succeeded even while the account's
+  `gemini-3.8-flash` bucket was at 0/20. A second prompt that needed two
+  `list_directory` tool calls ran the first two turns on
+  `gemini-3.5-flash-lite`, then silently moved the next turn to
+  `gemini-3.8-flash` (both models appear in that single run's own
+  `stats.models`) and hit the same `TerminalQuotaError`. So the 20/day
+  bucket is not only what `--model auto`'s router spends: a real
+  multi-tool-call session on an explicitly pinned model can fall onto it
+  too, meaning it takes very little agentic work per day, regardless of
+  `--model`, to make every further session with 2+ tool calls fail until
+  the reset. For automated or benchmark use, a pay-as-you-go API key is the
+  reliable path.
 
 ---
 
