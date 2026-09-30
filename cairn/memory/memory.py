@@ -48,6 +48,31 @@ def resolve_db_path(mem_cfg: dict, project_dir: Path | str | None = None) -> Pat
     return Path(LEGACY_SHARED_DB).expanduser()
 
 
+def forbid_to_json(patterns: list[str] | str | None, strict: bool = True) -> str | None:
+    """Stored form of a decision's `forbid` regexes. A lone string is one
+    pattern, never a sequence of one-character patterns. `strict` raises
+    ValueError on the first one that does not compile; otherwise (reading a
+    hand-edited decision file) it is dropped with a warning on stderr."""
+    import json as _json
+    import re as _re
+    import sys as _sys
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    kept = []
+    for p in patterns or []:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        try:
+            _re.compile(p)
+        except _re.error as exc:
+            if strict:
+                raise ValueError(f"forbid pattern {p!r} is not a valid regex: {exc}") from exc
+            print(f"cairn: ignoring forbid pattern {p!r}, not a valid regex: {exc}", file=_sys.stderr)
+            continue
+        kept.append(p)
+    return _json.dumps(kept, ensure_ascii=False) if kept else None
+
+
 class Memory:
     def __init__(self, config: dict, project_dir: Path | str | None = None):
         self._config = config  # kept for lazily-constructed helpers (e.g. ConflictDetector)
@@ -198,6 +223,7 @@ class Memory:
             ("uid", "TEXT"),
             ("anchor_commit", "TEXT"),
             ("recorded_by", "TEXT"),
+            ("forbid_json", "TEXT"),
         ]
         for col, typ in adds:
             if col not in existing:
@@ -663,6 +689,7 @@ class Memory:
         scope_path: str | None = None,
         scope: str = "project",
         recorded_by: str | None = None,
+        forbid: list[str] | None = None,
     ) -> int | str:
         """Insert a decision row synchronously and return its id.
 
@@ -679,9 +706,13 @@ class Memory:
         recorded_by:  the tool that recorded it (MCP client name, "cli"), so
                       a project worked on from several tools shows where
                       each decision came from.
+        forbid:       regexes that code added under this decision's scope must
+                      not match (`cairn memory guard`); invalid ones raise
+                      ValueError before anything is written.
         """
         import json as _json
 
+        forbid_json = forbid_to_json(forbid)
         self._validate_scope(scope)
         target_db = self._scope_db_path(scope)
         is_global = scope == "global"
@@ -707,8 +738,8 @@ class Memory:
             cursor = conn.execute(
                 "INSERT INTO memories (timestamp, prompt, response, keywords, importance, "
                 "content_hash, valid_from, kind, reasoning, alternatives_json, chose_because, scope_path, "
-                "uid, anchor_commit, recorded_by) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "uid, anchor_commit, recorded_by, forbid_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     now,
                     decision,
@@ -725,6 +756,7 @@ class Memory:
                     new_uid(datetime.fromisoformat(now)),
                     None if is_global else self._git_head(),
                     recorded_by,
+                    forbid_json,
                 ),
             )
             new_id = cursor.lastrowid
@@ -799,7 +831,7 @@ class Memory:
                 "SELECT id, timestamp, prompt, response, keywords, importance, "
                 "valid_from, valid_until, invalidated_reason, kind, reasoning, "
                 "alternatives_json, superseded_by, chose_because, scope_path, "
-                "uid, recorded_by "
+                "uid, recorded_by, forbid_json "
                 "FROM memories WHERE id=?",
                 (num_id,),
             ).fetchone()
@@ -827,6 +859,7 @@ class Memory:
             "alternatives": _json.loads(row[11]) if row[11] else [],
             "superseded_by": _tag(row[12]), "chose_because": row[13],
             "scope_path": row[14], "uid": row[15], "recorded_by": row[16],
+            "forbid": _json.loads(row[17]) if row[17] else [],
             "scope": "global" if is_global else "project",
             "supersedes": _tag(supersedes_id[0]) if supersedes_id else None,
             "evidence": evidence,
@@ -1177,6 +1210,24 @@ class Memory:
             for rid, uid, d, r, sp, imp in rows
         ]
 
+    def forbidden_for_path(self, path: str) -> list[dict]:
+        """Active project decisions carrying `forbid` patterns that apply to
+        `path`: repo-wide ones and ones scoped to it or an ancestor directory."""
+        import json as _json
+        rel = self._relative_to_project(path)
+        if not rel:
+            return []
+        path_sql, params = self._path_filter_sql(rel)
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, prompt, reasoning, scope_path, forbid_json FROM memories "
+                "WHERE kind='decision' AND valid_until IS NULL AND forbid_json IS NOT NULL"
+                + path_sql + " ORDER BY importance DESC, id DESC",
+                params,
+            ).fetchall()
+        return [{"id": rid, "decision": d, "reasoning": r, "path": sp, "forbid": _json.loads(f)}
+                for rid, d, r, sp, f in rows]
+
     def decisions_block(self) -> str:
         """Every active decision, as written into AGENTS.md. Used as boot context."""
         from cairn.memory import agents_md
@@ -1220,13 +1271,13 @@ class Memory:
         row = conn.execute(
             "SELECT uid, timestamp, prompt, reasoning, alternatives_json, chose_because, "
             "importance, scope_path, valid_until, invalidated_reason, superseded_by, anchor_commit, "
-            "recorded_by FROM memories WHERE id=? AND kind='decision'",
+            "recorded_by, forbid_json FROM memories WHERE id=? AND kind='decision'",
             (num_id,),
         ).fetchone()
         if not row:
             return None
         (uid, ts, decision, reasoning, alts, chose, imp, path, valid_until,
-         inv_reason, superseded_by, anchor, recorded_by) = row
+         inv_reason, superseded_by, anchor, recorded_by, forbid_json) = row
         if not uid:
             uid = new_uid(datetime.fromisoformat(ts))
             conn.execute("UPDATE memories SET uid=? WHERE id=?", (uid, num_id))
@@ -1249,6 +1300,7 @@ class Memory:
             "invalidated_reason": None if superseded_by is not None else inv_reason,
             "anchor_commit": anchor,
             "recorded_by": recorded_by,
+            "forbid": _json.loads(forbid_json) if forbid_json else [],
             "decision": decision, "reasoning": reasoning, "chose_because": chose,
             "alternatives": _json.loads(alts) if alts else [],
             "evidence": [
@@ -1398,6 +1450,7 @@ class Memory:
             "invalidated_reason": reason,
             "anchor_commit": d.get("anchor_commit"),
             "recorded_by": d.get("recorded_by"),
+            "forbid_json": forbid_to_json(d.get("forbid"), strict=False),
         }
 
     @staticmethod

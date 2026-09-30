@@ -269,7 +269,9 @@ cairn init                              # create .cairn/ and the AGENTS.md decis
 cairn init --profile cloud              # same, with the optional helper model on Groq
 cairn init --profile local              # same, with the optional helper model on a local Ollama server
 cairn init --yes                        # also register detected hosts without asking
+cairn init --dry-run                    # list every file init would create or change, write nothing
 cairn doctor                            # what is wired up here, and what is off
+cairn uninstall                         # list what Cairn wired into this project; --yes removes it (keeps .cairn/)
 
 # MCP server (what your IDE calls)
 cairn mcp serve                         # stdio JSON-RPC 2.0, Claude Code-compatible
@@ -279,6 +281,7 @@ cairn mcp config --host gemini-cli --with-hooks   # + opt-in BeforeAgent decisio
 
 # Decisions and handoff (same as the MCP tools, for any shell)
 cairn decide "Money is integer cents" --why "float rounding" --rejected float --because rounding --path shop
+cairn decide "No tenacity, hand-rolled backoff" --forbid "^\s*(import|from) tenacity\b"  # edits adding it are blocked
 cairn handoff "Added the price field" --next "Write apply_discount in shop/pricing.py"
 cairn sync                              # rewrite the AGENTS.md block (also automatic on every decision change)
 cairn check                             # exit 1 if the AGENTS.md block is missing or out of date (for CI)
@@ -295,6 +298,8 @@ cairn memory status                     # current task + handoff
 cairn memory dashboard --open           # single-file HTML decision dashboard
 cairn memory check "<approach>"         # has this already been rejected or abandoned?
 cairn memory for-diff main..HEAD        # which decisions apply to the files this diff changes (no arg: uncommitted work)
+cairn memory guard --staged             # exit 1 if staged changes add a line a decision forbids (pre-commit, CI)
+cairn memory import-native --source gemini  # Gemini CLI's GEMINI.md notes as decisions (personal ones go global)
 ```
 
 A longer reference lives in [docs/CLI.md](docs/CLI.md).

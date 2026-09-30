@@ -60,6 +60,14 @@ Below: what to paste *where*, plus any host-specific gotchas.
   `cairn memory for-path --hook`: before Claude edits a file, the decisions
   scoped to that file's directory are injected as `additionalContext`. It
   prints nothing when no decision applies, so it costs nothing on most edits.
+  The same hook enforces a decision's `forbid` patterns (`cairn decide ...
+  --forbid <regex>`, or `forbid` on `record_decision`): an edit that adds a
+  matching line is blocked with exit code 2 and the decision's reasoning on
+  stderr. Verified live (haiku, 2026-09-30): the edit was not applied, and
+  the model, which had been asked for exactly the forbidden library, asked
+  the user instead of retrying. Claude Code's Bash tool can still write a
+  file around it; `cairn memory guard --staged` in a pre-commit hook is the
+  check that reads the diff instead of the tool call.
   A `UserPromptSubmit` hook (`cairn memory detect`) flags decision-like
   language in the user's own message ("we decided...", "switch to X"), even
   when nobody asked to record it, quoting the matched phrase; pure pattern
@@ -165,8 +173,18 @@ Below: what to paste *where*, plus any host-specific gotchas.
   and quoted with `&` when it contains a space). Not registered: a
   `Stop`-nudge equivalent (an `AfterAgent` hook whose exit code 2 retries the
   turn is documented, but was never run against a real model response) and any
-  `SessionStart` or per-file `PreToolUse` equivalent. `cairn mcp config --host
+  `SessionStart` or per-file injection equivalent. `cairn mcp config --host
   gemini-cli --with-hooks` prints the recipe for a manual setup.
+- **Decision enforcement hook (verified 2026-09-30, 0.61.0).** `cairn init`
+  also registers `BeforeTool` on `write_file|replace` running `cairn memory
+  guard --hook` (named `cairn-guard`). Checked live: Gemini sends
+  `{session_id, transcript_path, cwd, hook_event_name, timestamp, tool_name,
+  tool_input}` with `tool_input.file_path`/`content`, and exit code 2 blocks
+  the tool call and shows stderr to the model ("Tool execution blocked:
+  ..."). Also observed in the same run: the blocked model then wrote the
+  file with `run_shell_command` (PowerShell `Set-Content`), which no
+  edit-tool hook sees. So the hook stops the common path, not every path;
+  `cairn memory guard --staged` as a git pre-commit hook covers the rest.
 - **Detected by:** the `gemini` executable on PATH, not a home directory
   marker (`~/.gemini` alone is ambiguous: Antigravity also uses it for its
   own knowledge folder without Gemini CLI being installed).
@@ -197,8 +215,9 @@ Below: what to paste *where*, plus any host-specific gotchas.
   way is the AGENTS.md block's instruction to call `record_decision` (in the two
   `cairn_agents` cross-tool runs measured so far, one v1 pilot and one v2, Gemini
   recorded the reversal through Cairn's tools itself: n=2, not a rate) and now
-  the `BeforeAgent` reminder (not measured against a real reply yet). Cairn does not import `GEMINI.md`: it is mostly
-  hand-written project instructions, not decisions.
+  the `BeforeAgent` reminder (not measured against a real reply yet). `cairn memory import-native --source gemini`
+  offers the top-level bullets of the project `GEMINI.md` as decisions (each shown first, nothing recorded without
+  a yes) and `~/.gemini/GEMINI.md` as global ones; Gemini's private project memory is left alone.
 - **Free Google login is closed for personal accounts (verified 2026-09-28,
   0.61.0).** The CLI's own shipped `quota-and-pricing.md` still promises
   1,000 requests/day for "Sign in with Google", but the server now answers

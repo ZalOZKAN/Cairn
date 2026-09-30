@@ -37,12 +37,15 @@ def test_claude_code_hook_is_valid_json():
     assert parsed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("memory detect")
 
 
-def test_gemini_cli_hook_recipe_is_valid_json_with_only_the_detector():
+def test_gemini_cli_hook_recipe_is_valid_json_with_the_detector_and_the_guard():
     result = runner.invoke(app, ["mcp", "config", "--host", "gemini-cli", "--with-hooks"])
     assert result.exit_code == 0
     tail = result.stdout[result.stdout.index("Optional: hooks"):]
     parsed = json.loads(tail[tail.index("{"):])
-    assert list(parsed["hooks"]) == ["BeforeAgent"]
+    assert list(parsed["hooks"]) == ["BeforeAgent", "BeforeTool"]
+    guard = parsed["hooks"]["BeforeTool"][0]
+    assert guard["matcher"] == "write_file|replace"
+    assert guard["hooks"][0]["command"].endswith("memory guard --hook")
     group = parsed["hooks"]["BeforeAgent"][0]
     assert group["matcher"] == "*"
     assert group["hooks"][0]["type"] == "command"

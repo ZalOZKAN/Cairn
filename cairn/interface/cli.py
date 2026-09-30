@@ -8,6 +8,7 @@ from cairn.interface.commands.memory import memory_app
 from cairn.interface.commands.init import init_cmd
 from cairn.interface.commands.mcp import mcp_app
 from cairn.interface.commands.project import check_cmd, decide_cmd, doctor_cmd, handoff_cmd, sync_cmd
+from cairn.interface.commands.uninstall import uninstall_cmd
 from cairn.interface.commands.version import version_cmd
 
 app = typer.Typer(
@@ -25,6 +26,7 @@ app.command("check")(check_cmd)
 app.command("decide")(decide_cmd)
 app.command("handoff")(handoff_cmd)
 app.command("doctor")(doctor_cmd)
+app.command("uninstall")(uninstall_cmd)
 app.command("version")(version_cmd)
 
 

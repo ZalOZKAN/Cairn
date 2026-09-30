@@ -173,11 +173,15 @@ def test_claude_hook_status_reports_per_event_presence(root):
 
 def test_install_gemini_hooks_writes_the_shape_gemini_cli_documents(root):
     """Shape from Gemini CLI 0.61.0's own hooks reference, and the same event
-    name/matcher the live BeforeAgent probe (2026-09-28) fired under."""
+    names/matchers the live BeforeAgent (2026-09-28) and BeforeTool
+    (2026-09-30) probes fired under."""
     assert mcp_cmd.install_gemini_hooks(root, "cairn") == "added"
     data = json.loads((root / ".gemini" / "settings.json").read_text(encoding="utf-8"))
-    assert data == {"hooks": {"BeforeAgent": [{"matcher": "*", "hooks": [
-        {"name": "cairn-detect", "type": "command", "command": "cairn memory detect"}]}]}}
+    assert data == {"hooks": {
+        "BeforeAgent": [{"matcher": "*", "hooks": [
+            {"name": "cairn-detect", "type": "command", "command": "cairn memory detect"}]}],
+        "BeforeTool": [{"matcher": "write_file|replace", "hooks": [
+            {"name": "cairn-guard", "type": "command", "command": "cairn memory guard --hook"}]}]}}
 
 
 def test_install_gemini_hooks_keeps_unrelated_hooks_and_the_mcp_entry(root):
@@ -232,16 +236,16 @@ def test_hook_exe_quotes_a_spaced_path_for_the_shell_that_will_run_it():
 def test_hook_status_stays_consistent_for_a_path_that_needs_quoting(root):
     spaced = str(root / "a dir" / "cairn")
     mcp_cmd.install_gemini_hooks(root, spaced)
-    assert mcp_cmd.gemini_hook_status(root, spaced) == {"BeforeAgent": True}
+    assert mcp_cmd.gemini_hook_status(root, spaced) == {"BeforeAgent": True, "BeforeTool": True}
     assert mcp_cmd.install_gemini_hooks(root, spaced) == "already"
 
 
 def test_gemini_hook_status_only_looks_at_geminis_own_settings_file(root):
-    assert mcp_cmd.gemini_hook_status(root, "cairn") == {"BeforeAgent": False}
+    assert mcp_cmd.gemini_hook_status(root, "cairn") == {"BeforeAgent": False, "BeforeTool": False}
     mcp_cmd.install_claude_hooks(root, "cairn")
-    assert mcp_cmd.gemini_hook_status(root, "cairn") == {"BeforeAgent": False}
+    assert mcp_cmd.gemini_hook_status(root, "cairn") == {"BeforeAgent": False, "BeforeTool": False}
     mcp_cmd.install_gemini_hooks(root, "cairn")
-    assert mcp_cmd.gemini_hook_status(root, "cairn") == {"BeforeAgent": True}
+    assert mcp_cmd.gemini_hook_status(root, "cairn") == {"BeforeAgent": True, "BeforeTool": True}
 
 
 # ---- cairn init wiring --------------------------------------------------

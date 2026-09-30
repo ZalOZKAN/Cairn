@@ -60,6 +60,7 @@ persistence/chroma/
 persistence/nudge-state.json
 persistence/hook-seen.json
 persistence/stats.json
+persistence/wiring.json
 *.jsonl
 """
 
@@ -157,6 +158,80 @@ def _register_hosts(yes: bool) -> None:
                           "to set up by hand", markup=False)
 
 
+def _plan(project_dir: Path, home: Path, yes: bool) -> tuple[dict[str, list[str]], list[str]]:
+    """({path: [what]}, notes) for everything `init` would write here, in the
+    order it writes. JSON steps run the same merges the real run uses, on an
+    in-memory copy, so a later step sees an earlier one's effect (Gemini's
+    host setup creates the settings file its context link then needs)."""
+    from cairn.interface.commands import mcp as mcp_cmd
+    from cairn.memory import agents_md
+    rows: dict[str, list[str]] = {}
+    notes: list[str] = []
+    copies: dict[Path, dict | None] = {}
+
+    def add(rel: str, labels: list[str]) -> None:
+        if labels:
+            rows.setdefault(rel, []).extend(x for x in labels if x not in rows.get(rel, []))
+
+    def edit(rel: str, merge) -> None:
+        path = project_dir / rel
+        if path not in copies:
+            try:
+                copies[path] = mcp_cmd._load_json_object(path)
+            except ValueError:
+                copies[path] = None
+                notes.append(f"{rel} is not plain JSON: init would skip it")
+        if copies[path] is not None:
+            add(rel, merge(copies[path]))
+
+    def mcp_entry(data: dict) -> list[str]:
+        action = mcp_cmd.merge_mcp_server(data, cairn_path)
+        return {"added": ["mcpServers.cairn"], "updated": ["mcpServers.cairn (repointed)"]}.get(action, [])
+
+    def hooks(host: str):
+        return lambda data: ([f"hooks ({', '.join(e)})"] if (e := mcp_cmd.merge_hooks(data, cairn_path, host)) else [])
+
+    def context(data: dict) -> list[str]:
+        return ["context.fileName AGENTS.md"] if agents_md.merge_gemini_context(data) else []
+
+    import shutil as _shutil
+    cairn_path = _shutil.which("cairn") or "cairn"
+    gemini = ".gemini/settings.json"
+    if not (project_dir / ".cairn").exists():
+        add(".cairn/", ["config.yaml, SYSTEM.md, .gitignore, memory/, persistence/"])
+        add("~/.cairn/projects.json", ["this project's entry (the dashboard's project list)"])
+        if not (home / ".cairn" / "global.db").exists():
+            add("~/.cairn/global.db", ["new (cross-project memory)"])
+        agents = agents_md.path(project_dir)
+        add("AGENTS.md", ["Cairn's decisions block" + ("" if agents.is_file() else " (new file)")])
+        claude = agents_md.claude_link_target(project_dir)
+        if claude is not None:
+            add(claude.relative_to(project_dir).as_posix(), ["@AGENTS.md import"])
+        if agents_md.gemini_in_use(project_dir):
+            edit(gemini, context)
+    else:
+        notes.append(".cairn/ already exists: only host registration runs (`cairn sync` refreshes AGENTS.md)")
+
+    hosts = mcp_cmd.detect_hosts()
+    automatable = [h for h in hosts if h in AUTOMATED_SETUP]
+    if automatable and not yes:
+        notes.append(f"asks before registering {', '.join(automatable)} (--yes skips the question)")
+    for host in automatable:
+        if host == "claude-code":
+            edit(".mcp.json", mcp_entry)
+            if copies.get(project_dir / ".mcp.json") is not None:
+                edit(".claude/settings.json", hooks("claude-code"))
+        elif host == "gemini-cli":
+            edit(gemini, mcp_entry)
+            if copies.get(project_dir / gemini) is not None:
+                edit(gemini, hooks("gemini-cli"))
+                edit(gemini, context)
+    for h in hosts:
+        if h not in AUTOMATED_SETUP:
+            notes.append(f"{h} detected: not set up automatically (`cairn mcp config --host {h} --with-hooks`)")
+    return rows, notes
+
+
 def init_cmd(
     project_name: str = typer.Option("", "--name", "-n", help="Project name"),
     profile: str = typer.Option(
@@ -170,6 +245,10 @@ def init_cmd(
         False, "--yes", "-y",
         help="Register Cairn's MCP server and hooks for detected hosts without asking",
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="List every file init would create or change, then exit without writing anything",
+    ),
 ):
     """Initialize Cairn in the current directory."""
     if profile not in PROFILE_TEMPLATES:
@@ -177,6 +256,16 @@ def init_cmd(
             f"[red]Unknown profile '{profile}'. Choose one of: {', '.join(PROFILE_TEMPLATES)}[/red]"
         )
         raise typer.Exit(code=1)
+
+    if dry_run:
+        rows, notes = _plan(Path.cwd(), Path.home(), yes)
+        console.print("[bold]Would create or change:[/bold]" if rows else "Nothing to write here.")
+        for rel, labels in rows.items():
+            console.print(f"  {rel}: {', '.join(labels)}", markup=False)
+        for note in notes:
+            console.print(f"  note: {note}", markup=False)
+        console.print("Dry run: nothing was written.", markup=False)
+        return
 
     cairn_dir = Path.cwd() / ".cairn"
 

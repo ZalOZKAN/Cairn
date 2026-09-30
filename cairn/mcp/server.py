@@ -379,7 +379,12 @@ class CairnMCPServer:
                    "scope": _str("'project' (default, this project's .cairn/) or 'global' "
                                  "(~/.cairn/global.db, cross-project decision, e.g. a coding "
                                  "convention or preference that applies to every project).",
-                                 default="project")},
+                                 default="project"),
+                   "forbid": {"type": "array", "items": {"type": "string"},
+                              "description": "Only for a hard rule the user states ('never', 'no X anywhere'): "
+                                             "regexes that code added under this decision must not match, e.g. "
+                                             "'^\\s*(import|from) tenacity\\b'. Cairn's edit hook then blocks an edit that "
+                                             "adds such a line. Project decisions only; omit otherwise."}},
                   required=["decision"]),
             _tool("check_approach",
                   "Call this BEFORE proposing an architectural or implementation approach, checks "
@@ -548,18 +553,10 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
         args["decision"], args.get("reasoning") or ""
     )
 
-    new_id = srv.project.memory.record_decision(
-        decision=args["decision"],
-        reasoning=args.get("reasoning") or None,
-        alternatives=args.get("alternatives") or None,
-        evidence=args.get("evidence") or None,
-        supersedes=supersedes,
-        chose_because=args.get("chose_because") or None,
-        importance=int(args.get("importance", 2)),
-        scope_path=args.get("scope_path") or None,
-        scope=args.get("scope", "project"),
-        recorded_by=srv.client_name,
-    )
+    try:
+        new_id = _record(srv, args, supersedes)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
     res = {"id": new_id, "kind": "decision"}
     if warning:
         res["warning"] = warning
@@ -573,6 +570,22 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
         if possible:
             res["possible_supersedes"] = possible
     return json.dumps(res, ensure_ascii=False)
+
+
+def _record(srv: CairnMCPServer, args: dict, supersedes: str | None) -> int | str:
+    return srv.project.memory.record_decision(
+        decision=args["decision"],
+        reasoning=args.get("reasoning") or None,
+        alternatives=args.get("alternatives") or None,
+        evidence=args.get("evidence") or None,
+        supersedes=supersedes,
+        chose_because=args.get("chose_because") or None,
+        importance=int(args.get("importance", 2)),
+        scope_path=args.get("scope_path") or None,
+        scope=args.get("scope", "project"),
+        recorded_by=srv.client_name,
+        forbid=args.get("forbid") or None,
+    )
 
 
 def _h_memory_get(srv: CairnMCPServer, args: dict) -> str:

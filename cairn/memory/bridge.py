@@ -17,17 +17,22 @@ Formats:
   `description` (and `globs` / `alwaysApply`, read but not otherwise used
   here). Built from Cursor's documented format (cursor.com/docs/rules); not
   verified against a live Cursor install.
-- Gemini CLI is deliberately not a source. Its memory (0.61.0, read from the
-  CLI's own bundled prompt, 2026-09-28) is markdown the model edits itself: a
-  committed project `GEMINI.md`, a private `MEMORY.md` index plus sibling notes
-  under `~/.gemini/tmp/<project id>/memory/` (the id is in `~/.gemini/
-  projects.json`), and a global personal file. There is no fixed format to
-  parse and no real sample here to check a parser against. An earlier version
-  parsed a `## Gemini Added Memories` heading that does not exist in the real
-  product; it was removed rather than repaired.
+- Gemini CLI (0.61.0): no save-memory tool; the model edits markdown files
+  itself and routes each fact by its phrasing into one of four tiers (read from
+  the CLI's own system prompt, 2026-09-29; the global tier confirmed by a live
+  sample, a `- <topic>: <preference>` bullet). Two tiers are imported: the
+  project's `GEMINI.md` (team conventions, already committed) as project
+  decisions, and the personal `~/.gemini/GEMINI.md` as Cairn global decisions,
+  so a personal preference never lands in a repo's committed files. Not
+  imported: subdirectory `GEMINI.md` files, and the private project memory
+  under `~/.gemini/tmp/<id>/memory/`, which Gemini keeps out of the repo by
+  definition while Cairn's project decisions are committed files. Top-level
+  bullets only, outside fenced code and outside tool-managed marker blocks
+  (Cairn's and other tools'). An earlier version parsed a `## Gemini Added Memories`
+  heading the real product does not have; that parser is gone.
 
 Every source produces the same shape: `{"decision", "reasoning", "source",
-"origin"}`. `source` becomes `recorded_by` (e.g. "claude-code-memory",
+"origin"}`, plus `"scope": "global"` for a cross-project item. `source` becomes `recorded_by` (e.g. "claude-code-memory",
 "cursor-rules") so provenance survives into AGENTS.md
 and `.cairn/decisions/*.md` exactly like any other decision.
 """
@@ -125,31 +130,75 @@ def parse_cursor_rules(project_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
+# ---- Gemini CLI -----------------------------------------------------------
+
+_BULLET = re.compile(r"^[-*]\s+(.+)$")
+_MANAGED = re.compile(r"<!--\s*[\w.:-]+?:(?:start|begin)\s*-->.*?<!--\s*[\w.:-]+?:end\s*-->", re.DOTALL)
+
+
+def gemini_bullets(text: str) -> list[str]:
+    """Top-level bullets of a GEMINI.md, outside fenced code and outside any
+    tool-managed marker block: what a person or the model wrote there as a
+    standing instruction. Nested bullets are detail, not separate facts."""
+    text = _MANAGED.sub("", text.replace("\r\n", "\n"))
+    out, fenced = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        m = None if fenced else _BULLET.match(line)
+        if m and _one_line(m.group(1)):
+            out.append(_one_line(m.group(1)))
+    return out
+
+
+def parse_gemini_memory(project_dir: Path, gemini_home: Path | None = None) -> list[dict[str, Any]]:
+    home = gemini_home or (Path.home() / ".gemini")
+    out = []
+    for path, scope, source in ((project_dir / "GEMINI.md", "project", "gemini-project"),
+                                (home / "GEMINI.md", "global", "gemini-global")):
+        if not path.is_file():
+            continue
+        for bullet in gemini_bullets(path.read_text(encoding="utf-8", errors="replace")):
+            item = {"decision": bullet, "reasoning": None, "source": source, "origin": path.name}
+            if scope == "global":
+                item["scope"] = "global"
+            out.append(item)
+    return out
+
+
 PARSERS = {
     "claude": lambda project_dir: parse_claude_memory(claude_memory_dir(project_dir)),
     "cursor": parse_cursor_rules,
+    "gemini": parse_gemini_memory,
 }
 
 
-def candidates(project_dir: Path, sources: list[str] | None = None) -> list[dict[str, Any]]:
+def candidates(project_dir: Path, sources: list[str] | None = None,
+               global_db: Path | None = None) -> list[dict[str, Any]]:
     """Every importable item across the requested sources (default: all),
     minus ones already imported with unchanged text (by `recorded_by` + the
     same `content_hash` every decision is stored with, so a re-run is a
-    no-op unless the source text actually changed)."""
+    no-op unless the source text actually changed). A global item is checked
+    against `global_db`, where it would have been imported to."""
     from cairn.memory.memory import Memory, sqlite_connect
 
     items = []
     for name in sources or PARSERS:
         items.extend(PARSERS[name](project_dir))
-    db_path = project_dir / ".cairn" / "persistence" / "memory.db"
-    seen: set[tuple[str, str]] = set()
-    if db_path.is_file():
+
+    def seen_in(db_path: Path | None) -> set[tuple[str, str]]:
+        if db_path is None or not db_path.is_file():
+            return set()
         with sqlite_connect(db_path) as conn:
             rows = conn.execute(
                 "SELECT recorded_by, content_hash FROM memories WHERE kind='decision'"
             ).fetchall()
-        seen = {(r, h) for r, h in rows if r}
+        return {(r, h) for r, h in rows if r}
+
+    seen = {"project": seen_in(project_dir / ".cairn" / "persistence" / "memory.db"), "global": seen_in(global_db)}
     return [
         i for i in items
-        if (i["source"], Memory._content_hash(i["decision"], i["reasoning"] or "")) not in seen
+        if (i["source"], Memory._content_hash(i["decision"], i["reasoning"] or ""))
+        not in seen[i.get("scope", "project")]
     ]

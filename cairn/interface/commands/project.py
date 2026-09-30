@@ -80,6 +80,9 @@ def decide_cmd(
     replaces: str = typer.Option("", "--replaces",
                                  help="A phrase from the decision this replaces, if you don't have its id"),
     importance: int = typer.Option(2, "--importance", "-i", help="1=normal, 2=decision, 3=critical"),
+    forbid: list[str] = typer.Option([], "--forbid",
+                                     help="A regex that code added under this decision must not match; "
+                                          "the PreToolUse hook blocks such an edit (repeatable)"),
 ):
     """Record a decision (the shell equivalent of the MCP record_decision tool)."""
     if len(because) > len(rejected):
@@ -101,11 +104,15 @@ def decide_cmd(
                 console.print(f"  #{c['id']}: {c['decision']}", markup=False)
         else:
             console.print("[yellow]--replaces matched nothing; recording as a new decision.[/yellow]")
-    new_id = project.memory.record_decision(
-        decision, reasoning=why or None, alternatives=alternatives or None,
-        supersedes=resolved_supersedes, importance=importance,
-        scope_path=path or None, recorded_by="cli",
-    )
+    try:
+        new_id = project.memory.record_decision(
+            decision, reasoning=why or None, alternatives=alternatives or None,
+            supersedes=resolved_supersedes, importance=importance,
+            scope_path=path or None, recorded_by="cli", forbid=forbid or None,
+        )
+    except ValueError as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(code=1)
     console.print(f"[green]Recorded decision #{new_id}[/green]")
     if resolved_supersedes is None:
         possible = project.memory.possible_supersedes(decision, path or None, exclude_id=new_id)

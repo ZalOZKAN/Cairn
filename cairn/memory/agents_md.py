@@ -62,12 +62,13 @@ def _active_decisions(memory) -> list[dict]:
     from cairn.memory.memory import sqlite_connect
     with sqlite_connect(memory.db_path) as conn:
         rows = conn.execute(
-            "SELECT id, prompt, reasoning, alternatives_json, scope_path FROM memories "
+            "SELECT id, prompt, reasoning, alternatives_json, scope_path, forbid_json FROM memories "
             "WHERE kind='decision' AND valid_until IS NULL ORDER BY importance DESC, uid ASC"
         ).fetchall()
     return [
-        {"id": i, "decision": d, "reasoning": r, "alternatives": json.loads(a) if a else [], "scope": s}
-        for i, d, r, a, s in rows
+        {"id": i, "decision": d, "reasoning": r, "alternatives": json.loads(a) if a else [], "scope": s,
+         "forbid": json.loads(f) if f else []}
+        for i, d, r, a, s, f in rows
     ]
 
 
@@ -96,6 +97,8 @@ def _entry(d: dict) -> list[str]:
     for a in d["alternatives"]:
         because = _one_line(a.get("rejected_because"))
         lines.append(f"  - Rejected: {_one_line(a.get('option'))}" + (f" ({because})" if because else ""))
+    if d.get("forbid"):
+        lines.append("  - Forbidden, an edit adding it is blocked: " + ", ".join(f"`{f}`" for f in d["forbid"]))
     return lines
 
 
@@ -293,25 +296,85 @@ def stale(memory) -> bool:
 CLAUDE_FILES = ("CLAUDE.md", ".claude/CLAUDE.md")
 
 
-def link_claude(project_dir: Path) -> Path | None:
-    """Claude Code reads AGENTS.md only when the project has no CLAUDE.md. If
-    one exists, add an import of AGENTS.md to it (inside Cairn markers, once).
-    Returns the file changed, or None when nothing was needed."""
+def _claude_link(project_dir: Path) -> tuple[Path, str] | None:
+    """(the CLAUDE.md that needs an AGENTS.md import, the import line), or
+    None when there is no CLAUDE.md or it already imports AGENTS.md."""
     for rel in CLAUDE_FILES:
         p = project_dir / rel
         if not p.exists():
             continue
-        text, newline = _read(p)
         target = "@AGENTS.md" if rel == "CLAUDE.md" else "@../AGENTS.md"
-        if target in text:
-            return None
-        link = f"{BEGIN}\n{target}\n{END}"
-        updated = _replace_block(text, link)
-        if updated is None:
-            updated = (text.rstrip("\n") + "\n\n" if text.strip() else "") + link + "\n"
-        p.write_text(updated, encoding="utf-8", newline=newline)
-        return p
+        return None if target in _read(p)[0] else (p, target)
     return None
+
+
+def claude_link_target(project_dir: Path) -> Path | None:
+    link = _claude_link(project_dir)
+    return link[0] if link else None
+
+
+def link_claude(project_dir: Path) -> Path | None:
+    """Claude Code reads AGENTS.md only when the project has no CLAUDE.md. If
+    one exists, add an import of AGENTS.md to it (inside Cairn markers, once).
+    Returns the file changed, or None when nothing was needed."""
+    found = _claude_link(project_dir)
+    if found is None:
+        return None
+    p, target = found
+    text, newline = _read(p)
+    link = f"{BEGIN}\n{target}\n{END}"
+    updated = _replace_block(text, link)
+    if updated is None:
+        updated = (text.rstrip("\n") + "\n\n" if text.strip() else "") + link + "\n"
+    p.write_text(updated, encoding="utf-8", newline=newline)
+    return p
+
+
+WIRING = Path(".cairn") / "persistence" / "wiring.json"
+GEMINI_LINK = "gemini-cli context.fileName AGENTS.md"
+
+
+def _wiring(project_dir: Path) -> set[str]:
+    try:
+        data = json.loads((project_dir / WIRING).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    added = data.get("added") if isinstance(data, dict) else None
+    return set(added) if isinstance(added, list) else set()
+
+
+def wired(project_dir: Path, key: str) -> bool:
+    return key in _wiring(project_dir)
+
+
+def record_wiring(project_dir: Path, key: str, added: bool) -> None:
+    """Remember (or forget) a setting Cairn added that nothing inside the
+    setting itself marks as Cairn's, so `cairn uninstall` can tell it from one
+    the user wrote. Per machine (gitignored): without the record, uninstall
+    keeps the setting."""
+    p = project_dir / WIRING
+    if not p.parent.is_dir():
+        return
+    keys = _wiring(project_dir)
+    keys = keys | {key} if added else keys - {key}
+    p.write_text(json.dumps({"added": sorted(keys)}, indent=2) + "\n", encoding="utf-8")
+
+
+def gemini_in_use(project_dir: Path) -> bool:
+    return (project_dir / ".gemini" / "settings.json").is_file() or (project_dir / "GEMINI.md").is_file()
+
+
+def merge_gemini_context(data: dict) -> bool:
+    """AGENTS.md appended to `context.fileName` (GEMINI.md, the default, kept
+    first). False when it is already listed."""
+    context = data.setdefault("context", {})
+    names = context.get("fileName") or ["GEMINI.md"]
+    if isinstance(names, str):
+        names = [names]
+    if "AGENTS.md" in names:
+        return False
+    context["fileName"] = [*names, "AGENTS.md"]
+    return True
 
 
 def link_gemini(project_dir: Path) -> Path | None:
@@ -326,19 +389,15 @@ def link_gemini(project_dir: Path) -> Path | None:
     None when nothing was needed or the file exists but does not parse as
     JSON (never clobbered)."""
     path = project_dir / ".gemini" / "settings.json"
-    if not path.is_file() and not (project_dir / "GEMINI.md").is_file():
+    if not gemini_in_use(project_dir):
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     except json.JSONDecodeError:
         return None
-    context = data.setdefault("context", {})
-    names = context.get("fileName") or ["GEMINI.md"]
-    if isinstance(names, str):
-        names = [names]
-    if "AGENTS.md" in names:
+    if not merge_gemini_context(data):
         return None
-    context["fileName"] = [*names, "AGENTS.md"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    record_wiring(project_dir, GEMINI_LINK, added=True)
     return path

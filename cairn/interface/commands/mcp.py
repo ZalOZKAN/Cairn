@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -73,11 +74,21 @@ _HOOK_SNIPPETS = {
     # the request sent to the model. The AfterAgent equivalent of the Stop
     # nudge (exit code 2 + stderr = retry turn) is documented but has not
     # been run against a real model response yet, so it is not registered.
+    # BeforeTool, checked live (0.61.0, 2026-09-30): exit code 2 blocks
+    # write_file and shows stderr to the model; the payload carries
+    # tool_input.file_path/content, the shape `memory guard --hook` reads. The
+    # blocked model then wrote the file through run_shell_command, which no
+    # edit-tool hook sees: the git-level `cairn memory guard --staged` is the
+    # backstop for that.
     "gemini-cli": lambda cmd: json.dumps({
         "hooks": {
             "BeforeAgent": [
                 {"matcher": "*",
                  "hooks": [{"name": "cairn-detect", "type": "command", "command": f"{cmd} memory detect"}]}
+            ],
+            "BeforeTool": [
+                {"matcher": "write_file|replace",
+                 "hooks": [{"name": "cairn-guard", "type": "command", "command": f"{cmd} memory guard --hook"}]}
             ],
         }
     }, indent=2),
@@ -175,20 +186,29 @@ def _load_json_object(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _install_mcp_servers_json(path: Path, cairn_path: str) -> str:
-    """Merge Cairn into a `{"mcpServers": {...}}`-shaped file. Every other
-    key, and every other server already there, is left untouched. Returns
-    "added", "updated" (an existing cairn entry pointed elsewhere), or
-    "already" (no change needed)."""
-    data = _load_json_object(path)
+def merge_mcp_server(data: dict, cairn_path: str) -> str:
+    """Cairn's entry into a `{"mcpServers": {...}}` object; every other key
+    and server is left untouched. Returns "added", "updated" (an existing
+    cairn entry pointed elsewhere), or "already" (no change needed)."""
     servers = data.setdefault("mcpServers", {})
     entry = {"command": cairn_path, "args": ["mcp", "serve"]}
     if servers.get("cairn") == entry:
         return "already"
     action = "updated" if "cairn" in servers else "added"
     servers["cairn"] = entry
+    return action
+
+
+def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _install_mcp_servers_json(path: Path, cairn_path: str) -> str:
+    data = _load_json_object(path)
+    action = merge_mcp_server(data, cairn_path)
+    if action != "already":
+        _write_json(path, data)
     return action
 
 
@@ -233,6 +253,42 @@ def _cairn_hook_groups(cairn_path: str, host: str = "claude-code") -> dict[str, 
     return {event: groups[0] for event, groups in recipe["hooks"].items()}
 
 
+def _hook_args() -> set[str]:
+    """What follows the executable in each of Cairn's hook commands, e.g.
+    "memory detect", read from the recipes themselves."""
+    return {h["command"].split(" ", 1)[1]
+            for host in _HOOK_SNIPPETS
+            for group in _cairn_hook_groups("cairn", host).values()
+            for h in group["hooks"]}
+
+
+def is_cairn_hook_command(command: str) -> bool:
+    """Whether a hook command is one of Cairn's own, whatever path the
+    executable had when it was written: plain, quoted, PowerShell's
+    `& '...'`, or `python -m cairn.interface.cli`."""
+    for args in _hook_args():
+        if command.endswith(" " + args):
+            exe = command[: -len(args)].strip()
+            break
+    else:
+        return False
+    exe = exe.removeprefix("&").strip().strip("'\"")
+    if re.search(r"-m\s+cairn(\.interface\.cli)?$", exe):
+        return True
+    return re.split(r"[\\/]", exe)[-1].lower() in {"cairn", "cairn.exe", "cairn.cmd", "cairn.bat"}
+
+
+def _present_commands(data: dict) -> set[tuple[str, str]]:
+    hooks = data.get("hooks", {})
+    present = set()
+    for event, groups in hooks.items() if isinstance(hooks, dict) else []:
+        for group in groups if isinstance(groups, list) else []:
+            for h in group.get("hooks", []) if isinstance(group, dict) else []:
+                if h.get("command"):
+                    present.add((event, h["command"]))
+    return present
+
+
 def _hook_status(project_dir: Path, cairn_path: str, host: str) -> dict[str, bool]:
     """{event: is cairn's exact command for it already present}. A missing or
     unparseable settings file reads as all False rather than raising, since
@@ -241,38 +297,34 @@ def _hook_status(project_dir: Path, cairn_path: str, host: str) -> dict[str, boo
         data = _load_json_object(project_dir / _HOOK_SETTINGS[host])
     except ValueError:
         data = {}
-    hooks = data.get("hooks", {})
-    present = set()
-    for event, groups in hooks.items() if isinstance(hooks, dict) else []:
-        for group in groups if isinstance(groups, list) else []:
-            for h in group.get("hooks", []) if isinstance(group, dict) else []:
-                if h.get("command"):
-                    present.add((event, h["command"]))
+    present = _present_commands(data)
     return {
         event: (event, group["hooks"][0]["command"]) in present
         for event, group in _cairn_hook_groups(cairn_path, host).items()
     }
 
 
+def merge_hooks(data: dict, cairn_path: str, host: str) -> list[str]:
+    """Cairn's hook groups appended to each event's own list rather than
+    replacing it, so hooks already configured for the same event are kept.
+    Returns the events that got one."""
+    present = _present_commands(data)
+    added = []
+    for event, group in _cairn_hook_groups(cairn_path, host).items():
+        if (event, group["hooks"][0]["command"]) in present:
+            continue
+        data.setdefault("hooks", {}).setdefault(event, []).append(group)
+        added.append(event)
+    return added
+
+
 def _install_hooks(project_dir: Path, cairn_path: str, host: str) -> str:
-    """Merge Cairn's hook groups into the host's project settings file,
-    appending to each event's own list rather than replacing it, so any hooks
-    the user already configured for the same event are kept. Returns "added"
-    or "already" (every command was already present)."""
+    """Returns "added" or "already" (every command was already present)."""
     path = project_dir / _HOOK_SETTINGS[host]
     data = _load_json_object(path)
-    hooks = data.setdefault("hooks", {})
-    status = _hook_status(project_dir, cairn_path, host)
-    changed = False
-    for event, group in _cairn_hook_groups(cairn_path, host).items():
-        if status[event]:
-            continue
-        hooks.setdefault(event, []).append(group)
-        changed = True
-    if not changed:
+    if not merge_hooks(data, cairn_path, host):
         return "already"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _write_json(path, data)
     return "added"
 
 

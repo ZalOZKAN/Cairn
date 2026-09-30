@@ -103,14 +103,67 @@ def test_parse_cursor_rules_missing_folder_is_empty(tmp_path):
     assert bridge.parse_cursor_rules(tmp_path) == []
 
 
-# ---- Gemini CLI is not a source -----------------------------------------
+# ---- Gemini CLI ----------------------------------------------------------------
 
-def test_gemini_is_not_an_import_source(root):
-    """The parser for a `## Gemini Added Memories` heading (which the real CLI
-    does not have) was removed, not kept as a silent no-op."""
-    assert "gemini" not in bridge.PARSERS
-    out = _cli(root, "memory", "import-native", "--source", "gemini", "--yes")
-    assert out.returncode == 1 and "Unknown source 'gemini'" in out.stdout
+# What Gemini CLI 0.61.0 itself wrote to ~/.gemini/GEMINI.md when told "Remember
+# that I personally always prefer 4-space indentation, not tabs, in any Python
+# code I write" (live probe, 2026-09-29).
+REAL_GLOBAL_SAMPLE = "- Python code preference: Always prefer 4-space indentation, not tabs.\n"
+
+
+def test_the_note_gemini_really_wrote_becomes_a_global_candidate(tmp_path):
+    home = tmp_path / "gemini-home"
+    home.mkdir()
+    (home / "GEMINI.md").write_text(REAL_GLOBAL_SAMPLE, encoding="utf-8")
+    assert bridge.parse_gemini_memory(tmp_path / "proj", gemini_home=home) == [{
+        "decision": "Python code preference: Always prefer 4-space indentation, not tabs.",
+        "reasoning": None, "source": "gemini-global", "origin": "GEMINI.md", "scope": "global"}]
+
+
+def test_gemini_project_file_skips_code_nested_bullets_and_managed_blocks(tmp_path):
+    (tmp_path / "GEMINI.md").write_text(
+        "# Team\n- Use pnpm, not npm\n  - since the lockfile mess\n```\n- not a fact\n```\n"
+        "<!-- othertool:start -->\n- othertool's own section\n<!-- othertool:end -->\n* Never deploy on Fridays\n",
+        encoding="utf-8")
+    items = bridge.parse_gemini_memory(tmp_path, gemini_home=tmp_path / "no-home")
+    assert [(i["decision"], i.get("scope", "project")) for i in items] == [
+        ("Use pnpm, not npm", "project"), ("Never deploy on Fridays", "project")]
+
+
+def test_gemini_private_project_memory_is_never_imported(tmp_path):
+    home = tmp_path / "gemini-home"
+    private = home / "tmp" / "proj" / "memory"
+    private.mkdir(parents=True)
+    (private / "MEMORY.md").write_text("- my local Postgres listens on 5433\n", encoding="utf-8")
+    assert bridge.parse_gemini_memory(tmp_path / "proj", gemini_home=home) == []
+
+
+def test_import_native_gemini_keeps_the_personal_note_out_of_the_repo(tmp_path):
+    import os
+    home, project = tmp_path / "home", tmp_path / "proj"
+    (home / ".gemini").mkdir(parents=True)
+    (home / ".gemini" / "GEMINI.md").write_text(REAL_GLOBAL_SAMPLE, encoding="utf-8")
+    (project / ".cairn").mkdir(parents=True)
+    global_db = (tmp_path / "global.db").as_posix()
+    (project / ".cairn" / "config.yaml").write_text(
+        f"memory: {{async_store: false, global_enabled: true, global_db_path: '{global_db}'}}\n", encoding="utf-8")
+    (project / "GEMINI.md").write_text("- Use pnpm, not npm\n", encoding="utf-8")
+    env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home)}
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-c", CLI.format(args=list(args))], capture_output=True,
+                              text=True, encoding="utf-8", cwd=project, env=env)
+
+    out = run("memory", "import-native", "--source", "gemini", "--yes")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "[gemini-global] (global) Python code preference" in out.stdout
+    files = "".join(f.read_text(encoding="utf-8") for f in (project / ".cairn" / "decisions").glob("*.md"))
+    assert "Use pnpm, not npm" in files and "4-space" not in files
+    import sqlite3
+    with sqlite3.connect(global_db) as conn:
+        rows = conn.execute("SELECT prompt, recorded_by FROM memories WHERE kind='decision'").fetchall()
+    assert rows == [("Python code preference: Always prefer 4-space indentation, not tabs.", "gemini-global")]
+    assert "Nothing new to import" in run("memory", "import-native", "--source", "gemini", "--yes").stdout
 
 
 # ---- candidates() dedup + CLI ---------------------------------------------

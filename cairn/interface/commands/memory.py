@@ -323,6 +323,8 @@ def memory_for_path(
         if not path or not (project_dir / ".cairn").is_dir():
             return
     project = Project(project_dir=project_dir, load_session=False)
+    if hook:
+        _block_if_forbidden(project.memory, payload, project_dir)
     rows = project.memory.decisions_for_path(path)
     if hook and payload.get("session_id"):
         rows = _unseen_this_session(project_dir, payload["session_id"], rows)
@@ -361,6 +363,67 @@ def memory_for_diff(
     text = format_brief(rows, f"Cairn decisions that apply to {what} ({len(paths)} changed files):")
     console.print(text or f"No path-scoped decisions apply to {what} ({len(paths)} changed files).",
                   markup=False, soft_wrap=True)
+
+
+def _block_if_forbidden(memory, payload: dict, project_dir: Path) -> None:
+    """Exit 2 with the reason on stderr when the edit in a PreToolUse /
+    BeforeTool payload adds a line a decision forbids: both Claude Code and
+    Gemini CLI treat exit code 2 from such a hook as "block this tool call and
+    show stderr to the model"."""
+    import sys
+    from cairn.memory import enforce
+    from cairn.memory.stats import bump
+    edit = enforce.edit_from_hook(payload, project_dir)
+    found = enforce.violations(memory, *edit) if edit else None
+    if found is None:
+        return
+    bump(project_dir, "guard", hit=bool(found))
+    if found:
+        print(enforce.block_message(found), file=sys.stderr)
+        raise typer.Exit(code=2)
+
+
+@memory_app.command("guard")
+def memory_guard(
+    spec: str = typer.Argument("", help="Git revision or range, e.g. main..HEAD (default: all uncommitted work)"),
+    staged: bool = typer.Option(False, "--staged", help="Only what is staged (for a git pre-commit hook)"),
+    hook: bool = typer.Option(
+        False, "--hook",
+        help="Claude Code PreToolUse / Gemini CLI BeforeTool hook mode: read the hook JSON on stdin "
+             "and block (exit 2) an edit whose added lines match a decision's forbid pattern",
+    ),
+):
+    """Fail when added code matches a decision's `forbid` pattern (only the lines a change adds)."""
+    import json
+    import sys
+    from cairn.core import Project
+    from cairn.memory import enforce
+
+    if hook:
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError:
+            return
+        project_dir = Path(payload.get("cwd") or Path.cwd())
+        if (project_dir / ".cairn").is_dir():
+            _block_if_forbidden(Project(project_dir=project_dir, load_session=False).memory, payload, project_dir)
+        return
+    if spec and staged:
+        console.print("[red]Give a revision range or --staged, not both.[/red]")
+        raise typer.Exit(code=2)
+    project = Project(load_session=False)
+    added = enforce.diff_added_lines(project.project_dir, spec, staged)
+    if added is None:
+        console.print(f"[red]Could not read the diff{f' for {spec}' if spec else ''}: "
+                      "not a git repository, or an unknown revision.[/red]")
+        raise typer.Exit(code=1)
+    found = [v for path, lines in added.items() for v in (enforce.violations(project.memory, path, lines) or [])]
+    if not found:
+        console.print(f"No forbidden patterns in the lines added ({len(added)} changed files).", markup=False)
+        return
+    console.print(enforce.block_message(found, "Cairn: these changes add code that a recorded decision forbids."),
+                  markup=False, soft_wrap=True)
+    raise typer.Exit(code=1)
 
 
 def _unseen_this_session(project_dir: Path, session_id: str, rows: list[dict]) -> list[dict]:
@@ -563,13 +626,15 @@ def memory_confirm(mem_id: str = typer.Argument(..., help="Decision id")):
 def memory_import_native(
     source: list[str] = typer.Option(
         [], "--source", "-s",
-        help="claude, cursor (repeatable; default: both)"),
+        help="claude, cursor, gemini (repeatable; default: all)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Import without asking"),
 ):
     """Import what another tool's own memory already learned (Claude Code
-    auto-memory, Cursor rules) as Cairn decisions, so every host sees them
-    through AGENTS.md. Shows candidates and asks before writing anything;
-    already-imported, unchanged items are skipped."""
+    auto-memory, Cursor rules, Gemini CLI's GEMINI.md files) as Cairn decisions,
+    so every host sees them. A personal cross-project item (Gemini's
+    ~/.gemini/GEMINI.md) becomes a global decision, never a committed project
+    file. Shows candidates and asks before writing anything; already-imported,
+    unchanged items are skipped."""
     from cairn.core import Project
     from cairn.memory import bridge
 
@@ -578,13 +643,21 @@ def memory_import_native(
             console.print(f"[red]Unknown source '{s}'. Choose from: {', '.join(bridge.PARSERS)}[/red]")
             raise typer.Exit(code=1)
     project = Project(load_session=False)
-    items = bridge.candidates(project.project_dir, source or None)
+    mem = project.memory
+    items = bridge.candidates(project.project_dir, source or None,
+                              mem.global_db_path if mem.global_enabled else None)
+    skipped = [i for i in items if i.get("scope") == "global" and not mem.global_enabled]
+    items = [i for i in items if i not in skipped]
+    if skipped:
+        console.print(f"[yellow]{len(skipped)} personal item(s) skipped: global memory is off "
+                      "(memory.global_enabled).[/yellow]")
     if not items:
         console.print("[green]Nothing new to import.[/green]")
         return
     console.print(f"[bold]{len(items)} candidate(s):[/bold]")
     for i in items:
-        console.print(f"  [{i['source']}] {i['decision']}", markup=False)
+        where = " (global)" if i.get("scope") == "global" else ""
+        console.print(f"  [{i['source']}]{where} {i['decision']}", markup=False)
     if not yes:
         try:
             proceed = typer.confirm(f"Import {len(items)} as Cairn decisions?")
@@ -594,7 +667,8 @@ def memory_import_native(
             console.print("[yellow]Cancelled.[/yellow]")
             return
     for i in items:
-        project.memory.record_decision(i["decision"], reasoning=i["reasoning"], recorded_by=i["source"])
+        project.memory.record_decision(i["decision"], reasoning=i["reasoning"], recorded_by=i["source"],
+                                       scope=i.get("scope", "project"))
     console.print(f"[green]Imported {len(items)} decision(s).[/green]")
 
 

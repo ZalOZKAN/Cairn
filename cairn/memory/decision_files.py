@@ -19,7 +19,7 @@ DECISIONS_DIRNAME = "decisions"
 
 _FRONT_KEYS = (
     "uid", "date", "status", "importance", "path", "supersedes",
-    "superseded_by", "valid_until", "invalidated_reason", "anchor_commit", "recorded_by",
+    "superseded_by", "valid_until", "invalidated_reason", "anchor_commit", "recorded_by", "forbid",
 )
 _ITEM_RE = re.compile(r"^- \*\*(.+?)\*\*:\s?(.*)$")
 
@@ -89,6 +89,8 @@ def parse(text: str) -> dict[str, Any]:
         out["valid_until"] = out["valid_until"].isoformat()
     out["importance"] = int(front.get("importance") or 2)
     out["status"] = front.get("status") or "active"
+    forbid = out["forbid"]
+    out["forbid"] = [forbid] if isinstance(forbid, str) else [str(f) for f in forbid or []]
 
     sections: dict[str, str] = {}
     title = ""
