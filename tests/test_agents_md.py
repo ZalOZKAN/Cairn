@@ -331,6 +331,21 @@ def test_hook_reminds_each_decision_once_per_session(root):
     assert "never touch the DB" in fire("s2", "src/a.py")
 
 
+def test_hook_full_gives_the_block_entry_when_a_file_is_read(root):
+    _mem(root).record_decision(
+        "Handlers never touch the DB directly", reasoning="Keeps SQL in one layer.",
+        alternatives=[{"option": "queries inside handlers", "rejected_because": "SQL everywhere"}],
+        scope_path="src")
+    payload = {"session_id": "s1", "cwd": str(root), "tool_name": "Read",
+               "tool_input": {"file_path": str(root / "src" / "a.py")}}
+    out = _cli(root, "memory", "for-path", "--hook", "--full", stdin=json.dumps(payload))
+    assert out.returncode == 0
+    text = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "- **Handlers never touch the DB directly**" in text
+    assert "  - Why: Keeps SQL in one layer." in text
+    assert "  - Rejected: queries inside handlers (SQL everywhere)" in text
+
+
 def test_doctor_reports_what_is_on_and_off(root):
     (root / "CLAUDE.md").write_text("# mine\n", encoding="utf-8")
     out = _cli(root, "doctor").stdout

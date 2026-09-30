@@ -305,6 +305,11 @@ def memory_for_path(
         False, "--hook",
         help="Claude Code PreToolUse hook mode: read the hook JSON on stdin, print hook JSON",
     ),
+    full: bool = typer.Option(
+        False, "--full",
+        help="Each decision with its reasoning and rejected alternatives (the AGENTS.md block's "
+             "format) instead of one line",
+    ),
 ):
     """Show the active decisions that apply to a file."""
     import json
@@ -328,7 +333,8 @@ def memory_for_path(
     rows = project.memory.decisions_for_path(path)
     if hook and payload.get("session_id"):
         rows = _unseen_this_session(project_dir, payload["session_id"], rows)
-    text = format_brief(rows, f"Cairn decisions that apply to {path}:")
+    header = f"Cairn decisions that apply to {path}:"
+    text = _full_entries(project.memory, rows, header) if full else format_brief(rows, header)
     if hook:
         if text:
             print(json.dumps({"hookSpecificOutput": {
@@ -363,6 +369,21 @@ def memory_for_diff(
     text = format_brief(rows, f"Cairn decisions that apply to {what} ({len(paths)} changed files):")
     console.print(text or f"No path-scoped decisions apply to {what} ({len(paths)} changed files).",
                   markup=False, soft_wrap=True)
+
+
+def _full_entries(memory, rows: list[dict], header: str) -> str:
+    """`rows` as the AGENTS.md block shows them: decision, why, rejected
+    alternatives, forbidden patterns, plus the staleness flag."""
+    from cairn.memory import agents_md
+    if not rows:
+        return ""
+    entries = agents_md.entries_by_id(memory)
+    lines = [header]
+    for r in rows:
+        lines += entries.get(r["id"], [f"- **{r['decision']}**"])
+        if r.get("stale"):
+            lines.append(f"  - NEEDS REVIEW: {r['stale']['commits_since']} commits since recorded")
+    return "\n".join(lines)
 
 
 def _block_if_forbidden(memory, payload: dict, project_dir: Path) -> None:

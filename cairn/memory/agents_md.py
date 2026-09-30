@@ -102,6 +102,11 @@ def _entry(d: dict) -> list[str]:
     return lines
 
 
+def entries_by_id(memory) -> dict[int, list[str]]:
+    """Each active decision's lines in the block's own format, by row id."""
+    return {d["id"]: _entry(d) for d in _active_decisions(memory)}
+
+
 def body(memory) -> str:
     """The block's content without markers; also used as boot context."""
     decisions = _active_decisions(memory)
