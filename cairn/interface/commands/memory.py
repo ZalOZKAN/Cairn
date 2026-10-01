@@ -316,6 +316,7 @@ def memory_for_path(
     import sys
     from cairn.core import Project
     from cairn.memory.decision_files import format_brief
+    from cairn.memory.stats import bump
 
     project_dir = Path.cwd()
     if hook:
@@ -336,6 +337,7 @@ def memory_for_path(
     header = f"Cairn decisions that apply to {path}:"
     text = _full_entries(project.memory, rows, header) if full else format_brief(rows, header)
     if hook:
+        bump(project_dir, "for_path_hook", hit=bool(text))
         if text:
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -587,7 +589,7 @@ def memory_capture(
 
 @memory_app.command("stats")
 def memory_stats():
-    """Local usage counters: how often the agent used each Cairn tool, and hit rates."""
+    """Local usage counters: how often the agent used each Cairn tool and each hook, and hit rates."""
     from cairn.memory.stats import load
     data = load(Path.cwd())
     tools = data.get("tools") or {}
@@ -595,7 +597,7 @@ def memory_stats():
     n_files = len(list(decisions_dir.glob("*.md"))) if decisions_dir.is_dir() else 0
     console.print(f"Decision files: {n_files}")
     if not tools:
-        console.print("[dim]No MCP tool calls recorded yet.[/dim]")
+        console.print("[dim]No tool or hook calls recorded yet.[/dim]")
         return
     table = Table(title=f"Tool usage since {str(data.get('since', '?'))[:10]}", box=box.ROUNDED)
     table.add_column("Tool", style="cyan")

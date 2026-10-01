@@ -346,6 +346,21 @@ def test_hook_full_gives_the_block_entry_when_a_file_is_read(root):
     assert "  - Rejected: queries inside handlers (SQL everywhere)" in text
 
 
+def test_hook_counts_its_runs_and_the_ones_that_injected(root):
+    _mem(root).record_decision("Handlers never touch the DB directly", scope_path="src")
+
+    def fire(path):
+        payload = {"session_id": "s1", "cwd": str(root), "tool_input": {"file_path": str(root / path)}}
+        assert _cli(root, "memory", "for-path", "--hook", stdin=json.dumps(payload)).returncode == 0
+
+    fire("src/a.py")
+    fire("src/b.py")
+    fire("docs/guide.md")
+    stats = json.loads((root / ".cairn" / "persistence" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["tools"]["for_path_hook"] == {"calls": 3, "hits": 1}
+    assert "for_path_hook" in _cli(root, "memory", "stats").stdout
+
+
 def test_doctor_reports_what_is_on_and_off(root):
     (root / "CLAUDE.md").write_text("# mine\n", encoding="utf-8")
     out = _cli(root, "doctor").stdout
