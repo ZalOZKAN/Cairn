@@ -34,6 +34,7 @@ def link_agents_md(project) -> list[str]:
     for kind in ("invalidated", "superseded", "recorded"):
         if result[kind]:
             changed.append(f"{result[kind]} decision(s) {kind} from AGENTS.md edits")
+    changed.extend(f"{name} (Claude Code scoped rules)" for name in result.get("claude", []))
     claude = agents_md.link_claude(project.project_dir)
     if claude is not None:
         changed.append(f"{claude.relative_to(project.project_dir).as_posix()} (imports AGENTS.md)")
@@ -168,7 +169,13 @@ def doctor_cmd():
         rows.append(("ok", "AGENTS.md", "block up to date (Antigravity, Cursor, Codex, Copilot read it)"))
 
     claude = next((root / rel for rel in agents_md.CLAUDE_FILES if (root / rel).exists()), None)
-    if claude is None:
+    if project.memory.claude_scoped_rules:
+        n_rules = len(agents_md._managed_rule_files(root))
+        rows.append(("!!" if agents_md._scoped_stale(project.memory) else "ok", "Claude Code",
+                     f"scoped rules on: repo-wide decisions in CLAUDE.md, {n_rules} rule file(s) in "
+                     f"{agents_md.RULES_DIR.as_posix()}/" + ("; out of date, run `cairn sync`"
+                                                           if agents_md._scoped_stale(project.memory) else "")))
+    elif claude is None:
         rows.append(("ok", "Claude Code", "no CLAUDE.md, so Claude Code (2.1.277+) reads AGENTS.md itself"))
     elif "AGENTS.md" in claude.read_text(encoding="utf-8"):
         rows.append(("ok", "Claude Code", f"{claude.relative_to(root).as_posix()} imports AGENTS.md"))

@@ -169,7 +169,19 @@ def uninstall(project_dir: Path, apply: bool) -> Plan:
     agents_gone = _retract_marked(project_dir, agents_md.path(project_dir), "Cairn's decisions block",
                                   apply, plan, kept_note="AGENTS.md kept: it has content that is not Cairn's")
     for rel in agents_md.CLAUDE_FILES:
-        _retract_marked(project_dir, project_dir / rel, "@AGENTS.md import", apply, plan)
+        p = project_dir / rel
+        text = agents_md._read(p)[0]
+        what = "Cairn's scoped decisions block" if agents_md._has_thin_block(text) else "@AGENTS.md import"
+        _retract_marked(project_dir, p, what, apply, plan)
+    rules = agents_md._managed_rule_files(project_dir)
+    if rules:
+        plan.removed.append((agents_md.RULES_DIR.as_posix() + "/", f"{len(rules)} scoped rule file(s)"))
+        if apply:
+            for rule in rules:
+                rule.unlink()
+            rules_dir = project_dir / agents_md.RULES_DIR
+            for d in (rules_dir, rules_dir.parent, rules_dir.parent.parent):
+                _prune_dir(d, project_dir)
     _retract_json(project_dir, project_dir / ".mcp.json", [_remove_mcp_server], apply, plan)
     _retract_json(project_dir, project_dir / ".claude" / "settings.json", [_remove_cairn_hooks], apply, plan)
     gemini_edits = [_remove_mcp_server, _remove_cairn_hooks]

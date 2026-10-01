@@ -110,6 +110,7 @@ class Memory:
         self._redact_extra_patterns = redact_cfg.get("extra_patterns", [])
 
         self.agents_md_enabled = (cfg.get("agents_md") or {}).get("enabled", True)
+        self.claude_scoped_rules = bool((cfg.get("agents_md") or {}).get("claude_scoped_rules", False))
         # re-entrancy guard: set while agents_md.write() is importing hand
         # edits (record_decision/invalidate calls would otherwise recurse
         # into a mid-update regeneration of the very block it is writing)
