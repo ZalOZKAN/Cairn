@@ -48,6 +48,21 @@ from cairn.memory.injector import AGENT_GUIDE
 from cairn.memory.stats import bump
 
 
+# What `tools/list` advertises when `mcp.tools: core` is set. Every tool stays callable by name either way; the
+# profile only decides what is sent to the host with each request (about 2,000 tokens for all 14, about 1,000 for these).
+CORE_TOOLS = ("record_decision", "check_approach", "decisions_for_path", "memory_save", "memory_boot", "memory_invalidate")
+
+
+def tool_profile(project_dir: Path) -> str:
+    """`core` or `all` from the project's `mcp.tools` setting; anything else, or no setting, means `all`."""
+    from cairn.config.loader import load_config
+    try:
+        value = ((load_config(project_dir / ".cairn" / "config.yaml").get("mcp") or {}).get("tools") or "all")
+    except Exception:
+        return "all"
+    return value if value in ("core", "all") else "all"
+
+
 class CairnMCPServer:
     """Minimal MCP server, JSON-RPC 2.0 over stdio."""
 
@@ -249,7 +264,8 @@ class CairnMCPServer:
         if method == "notifications/initialized":
             return None
         if method == "tools/list":
-            return self._respond(req_id, {"tools": self._tools})
+            listed = [t for t in self._tools if t["name"] in CORE_TOOLS] if tool_profile(self.project_dir) == "core" else self._tools
+            return self._respond(req_id, {"tools": listed})
         if method == "tools/call":
             name = params.get("name", "")
             args = params.get("arguments", {}) or {}
@@ -285,151 +301,107 @@ class CairnMCPServer:
     # ---- tool catalogue ------------------------------------------------
 
     def _define_tools(self) -> list[dict]:
+        # Descriptions are sent with every request of every host, so they are kept short: what the tool is for and
+        # when to call it. What the response contains is in the response itself. Names, parameters and defaults are
+        # a published surface and do not change.
         return [
             _tool("memory_recall",
-                  "Decay-aware recall of past memory entries relevant to a query.",
+                  "Decay-aware recall of past memory relevant to a query.",
                   {"query": _str("Search query"),
-                   "limit": _int("Max entries to return", default=5),
-                   "path": _str("Optional workspace-relative path (e.g. 'apps/api') to scope "
-                                 "results to that path and its ancestors; repo-wide entries "
-                                 "always match. Omit for unscoped, repo-wide recall.")},
+                   "limit": _int("Max entries", default=5),
+                   "path": _str("Workspace-relative path: also matches its ancestors. Omit for repo-wide.")},
                   required=["query"]),
             _tool("memory_store",
-                  "Add a new memory entry. Importance 1-3 controls ranking weight. "
-                  "Set scope='global' WITHOUT being asked whenever the user states a "
-                  "preference or convention that isn't specific to this codebase, e.g. "
-                  "'I always use TypeScript', 'I write commit messages in Conventional "
-                  "Commits format', 'I don't like using any'. Anything that would still be "
-                  "true in a different repo belongs in global scope so it isn't re-explained "
-                  "next project. Leave scope at the 'project' default for facts tied to this "
-                  "specific codebase (its stack, its architecture, its bugs).",
-                  {"prompt": _str("User-side prompt / topic"),
-                   "response": _str("Assistant response / fact to remember"),
-                   "importance": _int("1=normal, 2=decision, 3=critical", default=1),
-                   "scope_path": _str("Optional workspace-relative path this entry applies to "
-                                       "(e.g. 'apps/api'). Omit for repo-wide."),
-                   "scope": _str("'project' (default, this project's .cairn/) or 'global' "
-                                 "(~/.cairn/global.db, cross-project preferences/facts, "
-                                 "surfaces in every project's recall/search). See the tool "
-                                 "description above for when to pick 'global' unprompted.",
-                                 default="project")},
+                  "Store a memory entry. Use scope='global' unprompted for a user preference that would hold in any "
+                  "project ('I always use TypeScript'); facts about this codebase stay 'project'.",
+                  {"prompt": _str("Topic"),
+                   "response": _str("Fact to remember"),
+                   "importance": _int("1 normal, 2 decision, 3 critical", default=1),
+                   "scope_path": _str("Workspace-relative path it applies to. Omit for repo-wide."),
+                   "scope": _str("'project' or 'global' (~/.cairn/global.db)", default="project")},
                   required=["prompt", "response"]),
             _tool("memory_recent",
-                  "Return the N most recent valid memory entries.",
+                  "Most recent valid memory entries.",
                   {"n": _int("How many", default=10)}),
             _tool("memory_search",
                   "Substring search across memory.",
                   {"query": _str("Substring"),
                    "limit": _int("Max results", default=10),
-                   "path": _str("Optional workspace-relative path to scope results to "
-                                 "(same semantics as memory_recall's path param).")},
+                   "path": _str("Workspace-relative path to scope to")},
                   required=["query"]),
             _tool("memory_invalidate",
-                  "Retire a memory entry by id without deleting it.",
-                  {"id": _str("Memory row id, a plain number for a project entry, or "
-                               "'g<n>' (e.g. 'g12') for a global entry"),
-                   "reason": _str("Why it's no longer valid", default="")},
+                  "Retire a memory entry by id (kept, not deleted).",
+                  {"id": _str("Number, or 'g<n>' for a global entry"),
+                   "reason": _str("Why", default="")},
                   required=["id"]),
             _tool("memory_boot",
-                  "Build a session boot context, what to load at session start.",
-                  {"format": {"type": "string", "enum": ["text", "claude", "json"],
-                              "description": "Output format (default text)"},
+                  "Session boot context.",
+                  {"format": {"type": "string", "enum": ["text", "claude", "json"]},
                    "include_memory": {"type": "array", "items": {"type": "string"},
-                                      "description": "Extra memory file names to include"}}),
+                                      "description": "Extra memory file names"}}),
             _tool("memory_status",
-                  "Current task, status, and last handoff for this project.",
+                  "Current task, status and last handoff.",
                   {}),
             _tool("record_decision",
-                  "Record a settled decision so it is not re-argued later. Call it the moment a choice "
-                  "between options is settled, by you or the user, even if only mentioned in passing "
-                  "('from now on...', 'we agreed to...', 'switch to...', 'drop X'): a library or tool, an "
-                  "architecture or pattern, a data model, an API shape, a convention, a trade-off, or 'we "
-                  "tried X and it did not work'. Pass reasoning, the rejected alternatives, and scope_path "
-                  "when it only applies to part of the repo. If it replaces an earlier decision and you "
-                  "know its id, pass supersedes; if you don't, pass replaces with a short phrase from it "
-                  "instead and Cairn will find it. The decision is saved as a reviewable file in "
-                  ".cairn/decisions/. "
-                  "If the decision is a standing preference that would apply to any project, not just this codebase (e.g. 'always use pnpm over npm', 'prefer functional components in React'), pass scope='global' unprompted so it isn't re-decided next project. "
-                  "If `memory.conflict.enabled` is set in config, the response may include a `conflicts` field flagging prior decisions this one may contradict, treat it as a prompt to ask the user, never as a reason to silently invalidate anything. "
-                  "The response may also include `possible_supersedes` (other active decisions in the same "
-                  "scope that look related) or `replace_candidates` (when `replaces` matched more than one); "
-                  "if one of them really is what this decision replaces, call `memory_invalidate` on its id "
-                  "with a reason, so only the current decision stays active.",
+                  "Record a settled decision the moment a choice is made, even in passing ('from now on', 'we "
+                  "agreed', 'drop X', 'we tried X, it failed'). Give reasoning and the rejected alternatives; "
+                  "scope_path if it applies to part of the repo; scope='global' unprompted for a preference that "
+                  "holds in every project. To replace an earlier one pass supersedes (its id) or replaces (a "
+                  "phrase from it). If the response lists possible_supersedes or replace_candidates and one is "
+                  "really replaced, call memory_invalidate on it. A conflicts field is a prompt to ask the user.",
                   {"decision": _str("The decision in one sentence"),
-                   "reasoning": _str("Why we chose this", default=""),
-                   "alternatives": {"type": "array",
-                                    "description": "Rejected options",
+                   "reasoning": _str("Why", default=""),
+                   "alternatives": {"type": "array", "description": "Rejected options",
                                     "items": {"type": "object", "properties": {
                                         "option": {"type": "string"},
                                         "rejected_because": {"type": "string"}}}},
-                   "evidence": {"type": "array",
-                                "description": "Supporting sources/claims",
+                   "evidence": {"type": "array", "description": "Supporting sources",
                                 "items": {"type": "object", "properties": {
                                     "source": {"type": "string"},
                                     "claim": {"type": "string"}}}},
-                   "supersedes": _str("Prior decision id this replaces, plain number for a "
-                                       "project decision, or 'g<n>' for a global decision"),
-                   "replaces": _str("A short phrase from the decision this replaces, when you don't "
-                                     "have its id. Ignored if supersedes is also given."),
+                   "supersedes": _str("Id of the decision this replaces (number, or 'g<n>')"),
+                   "replaces": _str("A phrase from the decision this replaces, when the id is unknown"),
                    "chose_because": _str("Short tag for the deciding factor", default=""),
-                   "importance": _int("1=normal, 2=decision, 3=critical", default=2),
-                   "scope_path": _str("Optional workspace-relative path this decision applies "
-                                       "to (e.g. 'apps/api'). Omit for repo-wide. Only meaningful "
-                                       "for scope='project'."),
-                   "scope": _str("'project' (default, this project's .cairn/) or 'global' "
-                                 "(~/.cairn/global.db, cross-project decision, e.g. a coding "
-                                 "convention or preference that applies to every project).",
-                                 default="project"),
+                   "importance": _int("1 normal, 2 decision, 3 critical", default=2),
+                   "scope_path": _str("Workspace-relative path it applies to. Omit for repo-wide."),
+                   "scope": _str("'project' or 'global' (~/.cairn/global.db)", default="project"),
                    "forbid": {"type": "array", "items": {"type": "string"},
-                              "description": "Only for a hard rule the user states ('never', 'no X anywhere'): "
-                                             "regexes that code added under this decision must not match, e.g. "
-                                             "'^\\s*(import|from) tenacity\\b'. Cairn's edit hook then blocks an edit that "
-                                             "adds such a line. Project decisions only; omit otherwise."}},
+                              "description": "Hard rules only ('never', 'no X anywhere'): regexes that added code "
+                                             "must not match (the edit hook blocks it). Project scope only."}},
                   required=["decision"]),
             _tool("check_approach",
-                  "Call this BEFORE proposing an architectural or implementation approach, checks "
-                  "whether something like it was already tried and rejected (a decision's rejected "
-                  "alternative) or abandoned (a decision later invalidated/superseded), in this "
-                  "project or globally. Returns the reason it didn't work last time. Empty result "
-                  "means no record of it, not a guarantee it's safe, just that Cairn has no memory "
-                  "of it being tried.",
-                  {"approach": _str("The approach being considered, in a sentence or two"),
-                   "limit": _int("Max matches to return", default=5)},
+                  "Call BEFORE proposing an approach: was something like it already rejected or abandoned, and why? "
+                  "Empty means no record, not that it is safe.",
+                  {"approach": _str("The approach, in a sentence or two"),
+                   "limit": _int("Max matches", default=5)},
                   required=["approach"]),
             _tool("decisions_for_path",
-                  "Call this BEFORE editing or creating a file. Returns the active decisions "
-                  "that apply to that file's directory (e.g. 'API handlers use SQLAlchemy core, "
-                  "not the ORM'), flagged NEEDS REVIEW when the code has changed a lot since. "
-                  "Follow them, or ask the user before going against one. Cheap: no LLM call.",
-                  {"path": _str("File or directory path, absolute or relative to the project root")},
+                  "Call BEFORE editing or creating a file: the active decisions for its directory (NEEDS REVIEW if "
+                  "the code changed a lot since). Follow them or ask the user. No LLM call.",
+                  {"path": _str("File or directory, absolute or relative to the project root")},
                   required=["path"]),
             _tool("memory_get",
-                  "Full record for a memory id: reasoning, alternatives, evidence, supersedes chain.",
-                  {"id": _str("Memory row id, a plain number for a project entry, or "
-                               "'g<n>' (e.g. 'g12') for a global entry")},
+                  "Full record: reasoning, alternatives, evidence, supersedes chain.",
+                  {"id": _str("Number, or 'g<n>' for a global entry")},
                   required=["id"]),
             _tool("memory_thread",
-                  "Chronological versions of a decision topic. Provide 'id' to walk the supersedes chain, or 'topic' for keyword-overlap grouping (which also searches global decisions when global memory is enabled).",
-                  {"id": _str("Decision ID to walk the chain, plain number for project, "
-                               "'g<n>' for global"),
-                   "topic": _str("Keyword for decision group"),
-                   "topic_or_id": _str("Deprecated: use id or topic instead"),
+                  "A decision topic over time: pass id (supersedes chain) or topic.",
+                  {"id": _str("Decision id (number, or 'g<n>')"),
+                   "topic": _str("Keyword"),
+                   "topic_or_id": _str("Deprecated: use id or topic"),
                    "limit": _int("Max entries", default=20)},
                   required=[]),
             _tool("decision_audit_score",
-                  "Completeness score 0/4..4/4 for a decision: reasoning, alternatives, evidence, supersedes.",
-                  {"id": _str("Decision row id, plain number for project, 'g<n>' for global")},
+                  "Completeness 0/4 to 4/4: reasoning, alternatives, evidence, supersedes.",
+                  {"id": _str("Decision id (number, or 'g<n>')")},
                   required=["id"]),
             _tool("memory_save",
-                  "Leave a handoff note when you stop with work unfinished, so the next session "
-                  "can continue, even in a different tool (Antigravity, Claude Code, Cursor, ...). "
-                  "Pass what was done and the next step the user asked for; Cairn adds the git "
-                  "state and latest decisions. If the task is complete, leave next_step empty; "
-                  "never invent further steps. Saving a note is the last thing you do: it does "
-                  "not ask you to start the next step. Without arguments it runs the optional "
-                  "helper-model extractor instead.",
-                  {"summary": _str("What was done this session, in a few sentences"),
-                   "next_step": _str("The next step still open from the user's request; empty when done")}),
+                  "Leave a handoff note when you stop with work unfinished, for the next session in any tool. Pass "
+                  "what was done and the next step the user asked for (empty when complete, never invented). Do it "
+                  "last; it does not start the next step. With no arguments it runs the optional helper-model "
+                  "extractor.",
+                  {"summary": _str("What was done, a few sentences"),
+                   "next_step": _str("The next open step from the user's request; empty when done")}),
         ]
 
 

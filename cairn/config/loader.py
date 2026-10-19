@@ -59,7 +59,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # (extractor, manifest generation, conflict detection, summarization).
     # Off unless a config sets it; `cairn doctor` lists what is skipped.
     "memory_helper_model": None,
-    "mcp": {"servers": []},
+    # tools: "all" advertises the 14 MCP tools, "core" the 6 that carry decisions (about half the tokens per request).
+    "mcp": {"servers": [], "tools": "all"},
 }
 
 

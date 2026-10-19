@@ -321,3 +321,68 @@ def test_memory_thread_explicit_id_and_topic(srv):
 
     matches = json.loads(_call(srv, "memory_thread", {"topic": "localStorage"}))
     assert any("localStorage" in r["decision"] for r in matches)
+
+
+# --- tool profiles (mcp.tools) ------------------------------------------
+
+def _list(server):
+    resp = server._handle({"jsonrpc": "2.0", "id": 9, "method": "tools/list"})
+    return resp["result"]["tools"]
+
+
+def _set_profile(server, value):
+    cfg = server.project_dir / ".cairn" / "config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + (f"mcp:\n  tools: {value}\n" if value else ""), encoding="utf-8")
+
+
+def test_default_profile_advertises_every_tool(srv):
+    assert len(_list(srv)) == 14 == len(srv._tools)
+
+
+def test_core_profile_advertises_only_the_decision_tools(srv):
+    from cairn.mcp.server import CORE_TOOLS
+    _set_profile(srv, "core")
+    assert sorted(t["name"] for t in _list(srv)) == sorted(CORE_TOOLS)
+    assert {"record_decision", "check_approach", "decisions_for_path", "memory_save"} <= set(CORE_TOOLS)
+
+
+@pytest.mark.parametrize("value", ["all", "everything", "", "CORE", "[1]"])
+def test_other_values_mean_all(srv, value):
+    _set_profile(srv, value)
+    assert len(_list(srv)) == 14
+
+
+def test_a_tool_left_out_of_core_is_still_callable_by_name(srv):
+    _set_profile(srv, "core")
+    assert "memory_recent" not in {t["name"] for t in _list(srv)}
+    resp = srv._handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": "memory_recent", "arguments": {"n": 1}}})
+    assert "content" in resp["result"]
+
+
+def test_names_and_required_parameters_did_not_change(srv):
+    by_name = {t["name"]: t["inputSchema"] for t in srv._tools}
+    assert by_name["record_decision"]["required"] == ["decision"]
+    assert set(by_name["record_decision"]["properties"]) == {
+        "decision", "reasoning", "alternatives", "evidence", "supersedes", "replaces", "chose_because",
+        "importance", "scope_path", "scope", "forbid"}
+    assert by_name["memory_store"]["required"] == ["prompt", "response"]
+    assert set(by_name["memory_save"]["properties"]) == {"summary", "next_step"}
+    assert set(by_name["memory_thread"]["properties"]) == {"id", "topic", "topic_or_id", "limit"}
+    assert by_name["memory_boot"]["properties"]["format"]["enum"] == ["text", "claude", "json"]
+
+
+def test_the_tool_definitions_stay_small(srv):
+    """Descriptions go out with every request of every host. A rough ceiling (about 4 characters per token) that fails
+    when someone grows them again: 14 tools under 7,200 characters, the core 6 under 4,200."""
+    from cairn.mcp.server import CORE_TOOLS
+    size = lambda tools: sum(len(json.dumps(t, ensure_ascii=False)) for t in tools)   # noqa: E731
+    assert size(srv._tools) < 7200
+    assert size([t for t in srv._tools if t["name"] in CORE_TOOLS]) < 4200
+
+
+def test_init_writes_the_core_profile_for_new_projects():
+    from cairn.interface.commands.init import PROFILE_TEMPLATES
+    import yaml
+    for text in PROFILE_TEMPLATES.values():
+        assert yaml.safe_load(text)["mcp"]["tools"] == "core"

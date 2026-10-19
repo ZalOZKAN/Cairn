@@ -30,6 +30,9 @@ memory:
   agents_md:
     enabled: true         # keep every active decision in a managed block of AGENTS.md
 
+mcp:
+  tools: core             # "core": the 6 tools that carry decisions (about 1,000 tokens per request); "all": all 14
+
 # Optional helper model, used only for batch housekeeping (session extraction,
 # manifest, `cairn memory capture --from-git`, conflict detection). Decisions,
 # AGENTS.md and the cross-tool handoff never need it.
