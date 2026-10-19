@@ -33,8 +33,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "agents_md": {"enabled": True},
         # Stop-hook reminder threshold: file edits since the last record_decision.
         "nudge": {"edits": 8},
-        # Opt-in: the Stop hook also refreshes .cairn/persistence/session-handoff.md after every turn.
-        "handoff_on_stop": False,
         "conflict": {
             "enabled": False,
             "model": "groq/llama-3.3-70b-versatile",

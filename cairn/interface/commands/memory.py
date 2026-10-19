@@ -518,16 +518,7 @@ def memory_nudge():
     if not cairn_dir.is_dir():
         return
     config = load_config(cairn_dir / "config.yaml" if (cairn_dir / "config.yaml").exists() else None)
-    mem_cfg = config.get("memory") or {}
-    if mem_cfg.get("handoff_on_stop") and not payload.get("stop_hook_active"):
-        # Keeps session-handoff.md current for the next tool (a quota can end a session without a clean close).
-        # Never let it break the hook.
-        try:
-            from cairn.memory import handoff
-            handoff.refresh_light(project_dir, mem_cfg)
-        except Exception:
-            pass
-    threshold = int((mem_cfg.get("nudge") or {}).get("edits", 8))
+    threshold = int(((config.get("memory") or {}).get("nudge") or {}).get("edits", 8))
     msg = nudge_message(payload, cairn_dir / "persistence" / "nudge-state.json", threshold)
     if msg:
         # Exit code 2 + stderr: Claude Code shows stderr to the model and keeps
