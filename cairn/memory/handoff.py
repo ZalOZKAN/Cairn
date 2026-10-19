@@ -100,6 +100,18 @@ def refresh(memory, handoff_path: Path) -> Path:
     return handoff_path
 
 
+def refresh_light(project_dir: Path, mem_cfg: dict) -> Path | None:
+    """`refresh` for a hook: no Project, no embedding model, only the decision database and git. None when the
+    project has no `.cairn/` folder or no database yet. Cheap enough to run after every turn."""
+    from types import SimpleNamespace
+    from cairn.memory.memory import resolve_db_path
+    db_path = resolve_db_path(mem_cfg, project_dir)
+    if not (project_dir / ".cairn").is_dir() or not db_path.exists():
+        return None
+    return refresh(SimpleNamespace(db_path=db_path, project_dir=project_dir),
+                   project_dir / ".cairn" / "persistence" / "session-handoff.md")
+
+
 def save_note(project, summary: str = "", next_step: str = "", source: str | None = None) -> Path:
     """Write the agent's note as the handoff, then add the git and decision
     sections. `source` is the tool that left it (MCP client name, "cli")."""
