@@ -50,7 +50,7 @@ Below: what to paste *where*, plus any host-specific gotchas.
 - **Verify:** in a new conversation, ask "what MCP tools do you have?", the
   response should list `memory_recall`, `memory_store`, etc.
 - **Optional SessionStart hook:** `cairn mcp config --host claude-code --with-hooks`
-  prints an opt-in recipe that runs `cairn memory boot` at session start, so
+  prints an opt-in recipe that runs `cairn memory context` at session start, so
   memory loads without the agent needing to call a tool first. Doc-only:
   the command never writes to your config for you. Uses a `"command"`-type
   hook, not `"mcp_tool"`, Claude Code has a documented timing bug where

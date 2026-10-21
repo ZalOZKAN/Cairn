@@ -200,7 +200,7 @@ def adr_to_decision(text: str, source_name: str, today: datetime) -> dict[str, A
 
 
 def format_brief(rows: list[dict], header: str) -> str:
-    """One line per decision; used in boot context, MCP output and hooks."""
+    """One line per decision; used in session context, MCP output and hooks."""
     if not rows:
         return ""
     lines = [header]

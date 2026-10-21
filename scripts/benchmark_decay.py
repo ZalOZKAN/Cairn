@@ -1,5 +1,5 @@
 """
-Memory decay benchmark, recall@5 with decay ON vs OFF.
+Memory decay benchmark: recall@5 with decay ON vs OFF.
 
 Setup:
 - Seed 15 scenarios: each has a "stale" answer (older, lower importance)
@@ -34,7 +34,7 @@ from cairn.memory.memory import Memory  # noqa: E402
 # when I made it. Now there's a newer decision that should win." Without decay,
 # raw importance ranks stale first.
 # Fresh entries are also buried under noise so they fall OUT of the
-# sliding_window, recency_boost can no longer save them.
+# sliding_window: recency_boost can no longer save them.
 # (topic_query, stale_response, fresh_response, stale_age_days, fresh_age_days,
 #  stale_importance, fresh_importance)
 SCENARIOS: list[tuple[str, str, str, int, int, int, int]] = [
@@ -90,7 +90,7 @@ def _run(decay_enabled: bool) -> tuple[float, list[tuple[str, bool]]]:
         cfg["memory"]["async_store"] = False
         cfg["memory"]["dedup"] = {"enabled": False}
         cfg["memory"]["decay"] = {"enabled": decay_enabled, "half_life_days": 30}
-        mem = Memory(cfg)
+        mem = Memory(cfg, project_dir=td)
 
         # 1) Insert stale rows
         for q, stale, fresh, sage, fage, simp, fimp in SCENARIOS:
@@ -101,7 +101,7 @@ def _run(decay_enabled: bool) -> tuple[float, list[tuple[str, bool]]]:
         # 3) Fresh rows
         for q, stale, fresh, sage, fage, simp, fimp in SCENARIOS:
             _insert_aged(mem, q, fresh, fage, fimp)
-        # 4) Heavy noise AFTER fresh, pushes fresh out of sliding_window=10
+        # 4) Heavy noise AFTER fresh: pushes fresh out of sliding_window=10
         for i in range(NOISE_AFTER):
             _insert_aged(mem, f"later filler topic {i} delta echo", f"filler body {i}", 1, 1)
 

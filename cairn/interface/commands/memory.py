@@ -58,32 +58,38 @@ def memory_save(
     console.print("\n[dim]Next session: cairn memory boot[/dim]")
 
 
-@memory_app.command("boot")
-def memory_boot(
+@memory_app.command("context")
+@memory_app.command("boot", hidden=True)  # old name, kept so existing hooks keep working
+def memory_context(
     fmt: str = typer.Option("text", "--format", "-f", help="text | claude | json"),
     copy: bool = typer.Option(False, "--copy", "-c", help="Copy to clipboard"),
     memory: list[str] = typer.Option([], "--memory", "-m", help="Extra memory file"),
 ):
-    """Start of session: generate boot context."""
+    """Start of session: print the context to give an agent."""
     from cairn.core import Project
     from cairn.memory.injector import ContextInjector
 
+    from cairn.memory.notices import boot_notice
+
     injector = ContextInjector()
-    decisions = Project(load_session=False).memory.decisions_block()
+    mem = Project(load_session=False).memory
+    decisions = mem.decisions_block()
+    notice = boot_notice(mem)
+    if notice:
+        decisions = notice + "\n\n" + decisions
     context = injector.build(fmt=fmt, include_memory=memory or None, decisions=decisions)
-    token_est = injector.estimate_tokens(fmt)
 
     if copy:
         try:
             import pyperclip
             pyperclip.copy(context)
-            console.print(f"[green]Copied to clipboard (~{token_est} tokens).[/green]")
+            console.print("[green]Copied to clipboard.[/green]")
         except ImportError:
             console.print("[yellow]pyperclip not installed: pip install pyperclip[/yellow]")
             console.print(context)
     else:
         console.print(context)
-        console.print(f"\n[dim]~{token_est} tokens | use cairn memory boot --copy to copy to clipboard[/dim]")
+        console.print("\n[dim]Use cairn memory boot --copy to copy to clipboard[/dim]")
 
 
 @memory_app.command("status")
@@ -643,6 +649,111 @@ def memory_confirm(mem_id: str = typer.Argument(..., help="Decision id")):
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
     console.print("[green]Confirmed.[/green]" if ok else f"[yellow]No decision #{mem_id}.[/yellow]")
+
+
+@memory_app.command("review")
+def memory_review():
+    """List decisions held as possible prompt injection, for a human to approve or leave."""
+    from cairn.core import Project
+    from cairn.interface.i18n import current_language, t
+    project = Project(load_session=False)
+    lang = current_language(project.config)
+    rows = project.memory.quarantined_decisions()
+    if not rows:
+        console.print(f"[green]{t('review.none', lang)}[/green]")
+        return
+    table = Table(title=t("review.title", lang), box=box.ROUNDED)
+    for key in ("col.id", "col.decision", "col.reason", "col.source"):
+        table.add_column(t(key, lang))
+    for r in rows:
+        table.add_row(r["uid"] or str(r["id"]), r["decision"][:90], r["reason"], r["recorded_by"] or "-")
+    console.print(table)
+    console.print(f"[dim]{t('review.hint', lang)}[/dim]")
+
+
+@memory_app.command("approve")
+def memory_approve(mem_id: str = typer.Argument(..., help="Decision id or uid from `cairn memory review`")):
+    """Release a quarantined decision. Only a person can do this: no MCP tool approves."""
+    from cairn.core import Project
+    from cairn.interface.i18n import current_language, t
+    project = Project(load_session=False)
+    lang = current_language(project.config)
+    try:
+        ok = project.memory.approve_quarantined(mem_id)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    if not ok:
+        console.print(f"[yellow]{t('approve.missing', lang, id=mem_id)}[/yellow]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]{t('approve.ok', lang)}[/green]")
+
+
+@memory_app.command("missed")
+def memory_missed(
+    days: int = typer.Option(30, "--days", help="Only sessions from the last N days"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+):
+    """Messages that read like a decision but were never recorded, from Claude Code transcripts."""
+    import json
+    from cairn.config.loader import load_config
+    from cairn.interface.i18n import current_language, t
+    from cairn.memory.usage import project_report
+    lang = current_language(load_config())
+    report = project_report(Path.cwd(), days=days)
+    if as_json:
+        typer.echo(json.dumps({k: report[k] for k in ("signals", "missed", "capture_rate")} | {
+            "items": [m | {"session": s["session"]} for s in report["sessions"] for m in s["missed"]]},
+            ensure_ascii=False, indent=2))
+        return
+    rate = f"{report['capture_rate']:.0%}" if report["capture_rate"] is not None else "-"
+    console.print(t("missed.summary", lang, signals=report["signals"], covered=report["signals"] - report["missed"],
+                    missed=report["missed"], rate=rate))
+    if not report["missed"]:
+        console.print(f"[green]{t('missed.none', lang)}[/green]")
+        return
+    table = Table(title=t("missed.title", lang), box=box.ROUNDED)
+    for key in ("col.when", "col.signal", "col.message"):
+        table.add_column(t(key, lang))
+    for s in report["sessions"]:
+        for m in s["missed"]:
+            table.add_row(str(m["at"] or "")[:16].replace("T", " "), m["signal"], m["quote"])
+    console.print(table)
+    console.print(f"[dim]{t('missed.hint', lang)}[/dim]")
+
+
+@memory_app.command("usage")
+def memory_usage(
+    days: int = typer.Option(30, "--days", help="Only sessions from the last N days"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+):
+    """Token use per session with and without Cairn, as recorded in Claude Code transcripts."""
+    import json
+    from cairn.config.loader import load_config
+    from cairn.interface.i18n import current_language, t
+    from cairn.memory.usage import billable_input, project_report
+    lang = current_language(load_config())
+    report = project_report(Path.cwd(), days=days)
+    if as_json:
+        typer.echo(json.dumps({"groups": report["groups"],
+                               "capture_rate": report["capture_rate"]}, ensure_ascii=False, indent=2))
+        return
+    if not report["sessions"]:
+        console.print(f"[yellow]{t('usage.none', lang)}[/yellow]")
+    else:
+        table = Table(title=t("usage.title", lang), box=box.ROUNDED)
+        for key in ("col.group", "col.count", "col.calls", "col.input", "col.cache_read", "col.output",
+                    "col.billable"):
+            table.add_column(t(key, lang), justify="left" if key == "col.group" else "right")
+        for key, label in (("with_cairn", "group.with"), ("without_cairn", "group.without")):
+            g = report["groups"][key]
+            avg = g["avg_tokens"]
+            table.add_row(t(label, lang), str(g["sessions"]), str(g["avg_model_calls"]),
+                          f"{avg.get('input', 0):,}", f"{avg.get('cache_read', 0):,}", f"{avg.get('output', 0):,}",
+                          f"{billable_input(avg):,.0f}" if avg else "-")
+        console.print(table)
+        console.print(f"[dim]{t('usage.billable_note', lang)}[/dim]")
+        console.print(f"[dim]{t('usage.caveat', lang)}[/dim]")
 
 
 @memory_app.command("import-native")

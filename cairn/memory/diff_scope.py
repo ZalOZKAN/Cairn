@@ -4,7 +4,7 @@
 uses; a host without such a hook (or a human, or CI, before a commit or in a
 review) needs it for the whole change at once. Pure git plus the decision
 records: no model call, and repo-wide decisions stay out for the same reason
-they do in `decisions_for_path` (AGENTS.md and the boot context already carry
+they do in `decisions_for_path` (AGENTS.md and the session context already carry
 them).
 """
 from __future__ import annotations

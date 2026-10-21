@@ -29,6 +29,10 @@ memory:
     threshold: 0.92
   agents_md:
     enabled: true         # keep every active decision in a managed block of AGENTS.md
+    language: __LANG__            # en, tr, fr, es, de, zh, ja: the text Cairn writes around your decisions
+
+ui:
+  language: __LANG__              # review, measurement and dashboard screens (CAIRN_LANG overrides)
 
 mcp:
   tools: core             # "core": the 6 tools that carry decisions (about 1,000 tokens per request); "all": all 14
@@ -283,7 +287,10 @@ def init_cmd(
 
     # config.yaml
     config_path = cairn_dir / "config.yaml"
-    config_path.write_text(PROFILE_TEMPLATES[profile], encoding="utf-8")
+    # The project language is fixed here, once, from this machine's locale:
+    # AGENTS.md must render the same on every teammate's machine afterwards.
+    from cairn.interface.i18n import current_language
+    config_path.write_text(PROFILE_TEMPLATES[profile].replace("__LANG__", current_language()), encoding="utf-8")
 
     # SYSTEM.md
     name = project_name or Path.cwd().name

@@ -60,6 +60,83 @@ def sync_cmd():
         console.print("[green]AGENTS.md is up to date[/green]")
 
 
+def set_language(config_path, ui: str | None = None, agents: str | None = None) -> None:
+    """Set `ui.language` and/or `memory.agents_md.language` in config.yaml,
+    editing lines in place so the file's comments survive."""
+    import re
+    from pathlib import Path
+    path = Path(config_path)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+    def put(parent: re.Pattern, indent: str, value: str) -> bool:
+        for i, line in enumerate(lines):
+            if not parent.match(line):
+                continue
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j].startswith(indent)):
+                if re.match(rf"{indent}language:", lines[j]):
+                    comment = lines[j].split("#", 1)[1] if "#" in lines[j] else None
+                    lines[j] = f"{indent}language: {value}" + (f"  #{comment}" if comment else "")
+                    return True
+                j += 1
+            lines.insert(i + 1, f"{indent}language: {value}")
+            return True
+        return False
+
+    if ui and not put(re.compile(r"^ui:\s*(#.*)?$"), "  ", ui):
+        lines += ["", "ui:", f"  language: {ui}"]
+    if agents and not put(re.compile(r"^  agents_md:\s*(#.*)?$"), "    ", agents):
+        # no agents_md block yet: open one right under `memory:`
+        at = next((i for i, line in enumerate(lines) if re.match(r"^memory:\s*(#.*)?$", line)), None)
+        if at is not None:
+            lines[at + 1:at + 1] = ["  agents_md:", f"    language: {agents}"]
+        elif any(line.startswith("memory:") for line in lines):
+            # one-line `memory: {...}`: a second `memory:` key would silently
+            # replace it, so leave it; AGENTS.md text falls back to ui.language
+            if agents != ui:
+                raise ValueError("memory: is written on one line in config.yaml; "
+                                 "add agents_md: {language: ...} to it by hand")
+        else:
+            lines += ["", "memory:", "  agents_md:", f"    language: {agents}"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+
+
+def lang_cmd(
+    code: str = typer.Argument("", help="en, tr, fr, es, de, zh, ja; empty to show the current setting"),
+    only: str = typer.Option("", "--only", help="ui (screens and help) or agents (AGENTS.md text); default both"),
+):
+    """Show or change Cairn's language (screens, help and the AGENTS.md text)."""
+    from pathlib import Path
+    from cairn.config.loader import load_config
+    from cairn.interface.i18n import LANGUAGES, current_language
+    from cairn.memory import agents_text
+    config_path = Path.cwd() / ".cairn" / "config.yaml"
+    if not code:
+        cfg = load_config(config_path if config_path.exists() else None)
+        console.print(f"ui (screens, help): {current_language(cfg)}")
+        console.print(f"agents (AGENTS.md text): {agents_text.language(cfg)}")
+        console.print("available: " + ", ".join(f"{k} ({v})" for k, v in LANGUAGES.items()))
+        return
+    code = code.strip().lower()[:2]
+    if code not in LANGUAGES:
+        console.print(f"[red]Unknown language {code!r}. Choose one of: {', '.join(LANGUAGES)}[/red]")
+        raise typer.Exit(code=1)
+    if not (Path.cwd() / ".cairn").is_dir():
+        console.print("[red]No .cairn/ here; run `cairn init` first.[/red]")
+        raise typer.Exit(code=1)
+    try:
+        set_language(config_path, ui=None if only == "agents" else code, agents=None if only == "ui" else code)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Language set to {LANGUAGES[code]}.[/green]")
+    if only != "ui":
+        project = _project(refresh_agents_md=False)
+        link_agents_md(project)
+        console.print("AGENTS.md rewritten in the new language.")
+
+
 def check_cmd():
     """Exit 1 if the AGENTS.md block is missing or out of date (for CI)."""
     from cairn.memory import agents_md

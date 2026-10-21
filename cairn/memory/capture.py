@@ -16,27 +16,13 @@ from typing import Any, Callable
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "write_file", "replace"}
 
 # A decision is often stated in passing, not as an explicit "please record
-# this": "the team decided...", "from now on...", "switch to X". Pure regex,
-# no LLM, so it costs nothing when it doesn't match; a false positive costs
-# one line the agent is told it may ignore, so recall matters more than
-# precision here. Word list, not a single monolithic pattern, so one bad
-# phrase does not have to be balanced against every other in the same regex.
-DECISION_SIGNALS = re.compile(
-    r"\b(?:"
-    r"from now on|going forward|"
-    r"we(?:'ve| have)? (?:agreed|decided)|(?:the )?team (?:agreed|decided)|"
-    r"in (?:today'?s |the )?(?:meeting|standup)|"
-    r"switch(?:ing|ed)? (?:to|from|away from)|"
-    r"migrat(?:e|ing|ed) (?:to|away from)|moving to|"
-    r"stop(?:ping|ped)? using|no longer (?:use|using)|"
-    r"deprecat(?:e|ing|ed)|"
-    r"let'?s use|we'?ll use"
-    # excludes bare "drop X" and "instead of": both are extremely common in
-    # ordinary code (SQL DROP TABLE/INDEX, "return X instead of Y") and would
-    # fire on most sessions, burying the signal this exists to give
-    r")\b",
-    re.IGNORECASE,
-)
+# this": "the team decided...", "from now on...", "bundan sonra...". Pure
+# regex, no LLM, so it costs nothing when it doesn't match; a false positive
+# costs one line the agent is told it may ignore, so recall matters more than
+# precision here. The per-language phrase lists live in cairn/memory/lang.py.
+# Bare "drop X" and "instead of" are left out on purpose: both are extremely
+# common in ordinary code (SQL DROP TABLE, "return X instead of Y").
+from cairn.memory.lang import DECISION_SIGNALS, PROPOSAL_RE, is_affirmation  # noqa: E402
 
 
 def looks_like_decision(text: str) -> str | None:
@@ -45,16 +31,74 @@ def looks_like_decision(text: str) -> str | None:
     return m.group(0) if m else None
 
 
+def assistant_text(entry: dict) -> str:
+    """The words the assistant wrote in one transcript record. Claude Code
+    writes `type: assistant` with text blocks; Gemini CLI's model records
+    carry a `content` string. Tool calls and thinking are not text."""
+    if not isinstance(entry, dict) or entry.get("type") not in ("assistant", "gemini", "model"):
+        return ""
+    msg = entry.get("message") if isinstance(entry.get("message"), dict) else entry
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def last_assistant_text(transcript: Path, tail_bytes: int = 200_000) -> str:
+    """The assistant's most recent message, read from the end of the
+    transcript so a long session costs one small read."""
+    try:
+        with transcript.open("rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - tail_bytes))
+            lines = f.read().decode("utf-8", errors="ignore").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            text = assistant_text(json.loads(line)).strip()
+        except json.JSONDecodeError:
+            continue
+        if text:
+            return text
+    return ""
+
+
+def accepted_proposal(prompt: str, transcript: Path | None) -> str | None:
+    """When the user's message is a short yes and the assistant's last message
+    was a proposal or a question, that message's closing lines (the part that
+    holds the proposal); else None. This is how "tamam, Redis'le gidelim" is
+    caught: the decision is in the assistant's words, the user only agrees."""
+    if transcript is None or not is_affirmation(prompt):
+        return None
+    last = last_assistant_text(transcript)
+    if not last or not PROPOSAL_RE.search(last[-600:]):
+        return None
+    return " ".join(last[-400:].split())
+
+
 def decision_language_reminder(payload: dict) -> str | None:
     """Reminder text for a UserPromptSubmit (Claude Code) or BeforeAgent
     (Gemini CLI) hook, or None to stay silent. Both send the user's own message
     as `payload["prompt"]`; matched text is quoted back so the agent (and
     `record_decision`'s evidence) can point at exactly what triggered this,
-    rather than a generic warning."""
+    rather than a generic warning. A short "yes" is read together with the
+    assistant's last message in `payload["transcript_path"]`."""
     prompt = payload.get("prompt") or ""
     signal = looks_like_decision(prompt)
     if not signal:
-        return None
+        path = payload.get("transcript_path")
+        proposal = accepted_proposal(prompt, Path(path) if path else None)
+        if not proposal:
+            return None
+        return (
+            f'Cairn: the user answered "{prompt.strip()[:40]}" to your last message ("...{proposal}"). If that '
+            "settled a design choice (library, pattern, data model, API shape, trade-off), call record_decision "
+            "(reasoning, rejected alternatives, scope_path) before moving on. If it was only a go-ahead for a "
+            "task or settled nothing, ignore this."
+        )
     return (
         f'Cairn: this message contains decision-like language ("{signal}"). If it settles '
         "a design choice (library, pattern, data model, API shape, trade-off) even in "

@@ -45,16 +45,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "skip_if_helper_unavailable": True,
         },
     },
-    "context": {
-        "enabled": True,
-        "max_tokens": 800,
-        "summarize": {
-            "enabled": False,
-            "threshold_tokens": 1200,
-            "target_tokens": 400,
-            "model": "groq/llama-3.3-70b-versatile",
-        },
-    },
     # Single optional helper model used for memory housekeeping
     # (extractor, manifest generation, conflict detection, summarization).
     # Off unless a config sets it; `cairn doctor` lists what is skipped.

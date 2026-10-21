@@ -36,39 +36,44 @@ import json
 import re
 from pathlib import Path
 
+from cairn.memory import agents_text
+
 FILENAME = "AGENTS.md"
 BEGIN = "<!-- cairn:begin -->"
 END = "<!-- cairn:end -->"
 NOTICE = ("<!-- Managed by Cairn. To change a decision, edit a bullet below, or use record_decision / "
           "`cairn decide`; either way the next sync applies it and reformats this block. -->")
-HANDOFF = ".cairn/persistence/session-handoff.md"
+HANDOFF = agents_text.HANDOFF
 
-INSTRUCTIONS = (
-    "Follow these decisions. If a task seems to require going against one, ask the user first.",
-    "When a new decision is settled, even one only mentioned in passing, record it: MCP tool "
-    '`record_decision`, `cairn decide "<decision>" --why "<reason>"`, or edit this block directly '
-    "(add, remove, or change a bullet); the next sync reads your edit into the decision records.",
-    f"Continuing earlier work, possibly started in another tool? Read `{HANDOFF}`. "
-    "If you stop with the user's task unfinished, leave a note: MCP tool `memory_save`, or "
-    '`cairn handoff "<what was done>" --next "<step still open>"`.',
-)
+# English text, kept for callers that read it; the block itself is written
+# in the project's language (see cairn/memory/agents_text.py).
+INSTRUCTIONS = tuple(agents_text.TEXT["en"][k] for k in ("follow", "safety", "record", "handoff"))
+
+
+def _tx(memory) -> dict[str, str]:
+    return agents_text.text(agents_text.language(getattr(memory, "_config", None)))
+
+
+_HIDDEN_CHARS = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 
 
 def _one_line(text: str | None) -> str:
-    return " ".join((text or "").split())
+    # Invisible characters never reach the block, even from rows recorded
+    # before the decision guard existed.
+    return " ".join(_HIDDEN_CHARS.sub("", text or "").split())
 
 
 def _active_decisions(memory) -> list[dict]:
     from cairn.memory.memory import sqlite_connect
     with sqlite_connect(memory.db_path) as conn:
         rows = conn.execute(
-            "SELECT id, prompt, reasoning, alternatives_json, scope_path, forbid_json FROM memories "
+            "SELECT id, prompt, reasoning, alternatives_json, scope_path, forbid_json, uid FROM memories "
             "WHERE kind='decision' AND valid_until IS NULL ORDER BY importance DESC, uid ASC"
         ).fetchall()
     return [
         {"id": i, "decision": d, "reasoning": r, "alternatives": json.loads(a) if a else [], "scope": s,
-         "forbid": json.loads(f) if f else []}
-        for i, d, r, a, s, f in rows
+         "forbid": json.loads(f) if f else [], "uid": u}
+        for i, d, r, a, s, f, u in rows
     ]
 
 
@@ -90,40 +95,34 @@ def _texts_by_id(memory, ids: set[int]) -> dict[str | None, set[str]]:
     return out
 
 
-def _entry(d: dict) -> list[str]:
+def _entry(d: dict, tx: dict[str, str] | None = None) -> list[str]:
+    tx = tx or agents_text.TEXT["en"]
     lines = [f"- **{_one_line(d['decision'])}**"]
     if d["reasoning"]:
-        lines.append(f"  - Why: {_one_line(d['reasoning'])}")
+        lines.append(f"  - {tx['why']}: {_one_line(d['reasoning'])}")
     for a in d["alternatives"]:
         because = _one_line(a.get("rejected_because"))
-        lines.append(f"  - Rejected: {_one_line(a.get('option'))}" + (f" ({because})" if because else ""))
+        lines.append(f"  - {tx['rejected']}: {_one_line(a.get('option'))}" + (f" ({because})" if because else ""))
     if d.get("forbid"):
-        lines.append("  - Forbidden, an edit adding it is blocked: " + ", ".join(f"`{f}`" for f in d["forbid"]))
+        lines.append(f"  - {tx['forbidden']}: " + ", ".join(f"`{f}`" for f in d["forbid"]))
     return lines
 
 
 def entries_by_id(memory) -> dict[int, list[str]]:
     """Each active decision's lines in the block's own format, by row id."""
-    return {d["id"]: _entry(d) for d in _active_decisions(memory)}
-
-
-def _token_estimate(text: str) -> int:
-    return max(1, len(text) // 4)
+    tx = _tx(memory)
+    return {d["id"]: _entry(d, tx) for d in _active_decisions(memory)}
 
 
 def _index_entry(d: dict) -> str:
-    scope = d["scope"] or "repo-wide"
-    full = "\n".join(_entry(d))
-    return f"- [#{d['id']}] {_one_line(d['decision'])} ({scope}; ~{_token_estimate(full)} tokens; call `memory_get` for details)"
+    # The uid, not the row id: row ids are local and change on reindex,
+    # uids are stored in the decision files and are the same on every machine.
+    return f"- [{d['uid'] or d['id']}] {_one_line(d['decision'])}"
 
 
-def body(memory, detail: bool = True, max_tokens: int | None = None) -> str:
-    """The block's content without markers; also used as boot context.
-
-    ``detail=False`` emits an index. With ``max_tokens``, full entries are
-    packed in deterministic order and entries that do not fit remain as index
-    lines, so the caller never loses discoverability.
-    """
+def body(memory, detail: bool = True) -> str:
+    """The block's content without markers; also used as session context.
+    ``detail=False`` emits an index: one line per decision, by uid."""
     decisions = _active_decisions(memory)
     repo_wide = [d for d in decisions if not d["scope"]]
     by_scope: dict[str, list[dict]] = {}
@@ -131,29 +130,21 @@ def body(memory, detail: bool = True, max_tokens: int | None = None) -> str:
         if d["scope"]:
             by_scope.setdefault(d["scope"], []).append(d)
 
-    lines = ["## Project decisions (Cairn)", "", *INSTRUCTIONS, ""]
-    if not detail:
-        max_tokens = 0
-    budget = max_tokens
-    selected: set[int] = set()
-    if detail and budget is not None:
-        packed = "\n".join(lines)
-        for d in decisions:
-            candidate = "\n".join(_entry(d))
-            if _token_estimate(packed + candidate) <= budget:
-                selected.add(d["id"])
-                packed += candidate
+    tx = _tx(memory)
+    lines = [f"## {tx['heading']}", "", tx["follow"], tx["safety"], tx["record"], tx["handoff"], ""]
     if not decisions:
-        lines += ["No decisions recorded yet.", ""]
+        lines += [tx["none_yet"], ""]
+    elif not detail:
+        lines += [tx["index_hint"], ""]
     if repo_wide:
-        lines += ["### Repo-wide", ""]
+        lines += [f"### {tx['repo_wide']}", ""]
         for d in repo_wide:
-            lines += _entry(d) if d["id"] in selected or (detail and budget is None) else [_index_entry(d)]
+            lines += _entry(d, tx) if detail else [_index_entry(d)]
         lines.append("")
     for scope, rows in sorted(by_scope.items()):
         lines += [f"### `{scope}/`", ""]
         for d in rows:
-            lines += _entry(d) if d["id"] in selected or (detail and budget is None) else [_index_entry(d)]
+            lines += _entry(d, tx) if detail else [_index_entry(d)]
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -164,8 +155,12 @@ def block(memory) -> str:
 
 _SCOPE_RE = re.compile(r"^### `(.+)/`\s*$")
 _BULLET_RE = re.compile(r"^- \*\*(.+?)\*\*\s*$")
-_WHY_RE = re.compile(r"^\s+- Why: (.*)$")
-_REJECTED_RE = re.compile(r"^\s+- Rejected: ([^(]+?)(?: \((.*)\))?\s*$")
+# Labels of every language are read back, so changing the project language
+# never makes Cairn misread a block written in the previous one.
+_REPO_WIDE = {f"### {label}" for label in agents_text.labels("repo_wide")}
+_WHY_RE = re.compile(r"^\s+- (?:%s): (.*)$" % "|".join(map(re.escape, agents_text.labels("why"))))
+_REJECTED_RE = re.compile(
+    r"^\s+- (?:%s): ([^(]+?)(?: \((.*)\))?\s*$" % "|".join(map(re.escape, agents_text.labels("rejected"))))
 
 
 _NO_SECTION = object()  # before the first heading: instructions, not an entry
@@ -180,7 +175,7 @@ def _parse_body(text: str) -> dict[str | None, dict[str, dict]]:
     scope = _NO_SECTION
     entry = None
     for line in text.split("\n"):
-        if line.strip() == "### Repo-wide":
+        if line.strip() in _REPO_WIDE:
             scope, entry = None, None
             out.setdefault(scope, {})
             continue
@@ -306,24 +301,19 @@ CLAUDE_NOTICE = ("<!-- Managed by Cairn (memory.agents_md.claude_scoped_rules): 
                  "scoped ones are in .claude/rules/cairn/. Edit decisions in AGENTS.md or with `cairn decide`. -->")
 RULE_NOTICE = ("<!-- Managed by Cairn: regenerated by `cairn sync`. Edit the decision in AGENTS.md or with "
                "`cairn decide`, not here. -->")
-THIN_INSTRUCTIONS = (
-    INSTRUCTIONS[0],
-    "Decisions scoped to a directory are added to your context when you open or edit a file there.",
-    "When a new decision is settled, even one only mentioned in passing, record it: MCP tool "
-    '`record_decision`, or `cairn decide "<decision>" --why "<reason>"`.',
-    INSTRUCTIONS[2],
-)
+THIN_INSTRUCTIONS = tuple(agents_text.TEXT["en"][k] for k in ("follow", "safety", "scoped", "record_thin", "handoff"))
 
 
 def thin_body(memory) -> str:
     """What CLAUDE.md carries in scoped-rules mode: the instructions and the
     repo-wide decisions, in the AGENTS.md block's entry format."""
     repo_wide = [d for d in _active_decisions(memory) if not d["scope"]]
-    lines = ["## Project decisions (Cairn)", "", *THIN_INSTRUCTIONS, ""]
+    tx = _tx(memory)
+    lines = [f"## {tx['heading']}", "", *(tx[k] for k in ("follow", "safety", "scoped", "record_thin", "handoff")), ""]
     if repo_wide:
-        lines += ["### Repo-wide", ""]
+        lines += [f"### {tx['repo_wide']}", ""]
         for d in repo_wide:
-            lines += _entry(d)
+            lines += _entry(d, tx)
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -341,11 +331,12 @@ def scope_rules(memory) -> dict[str, str]:
         if d["scope"]:
             by_scope.setdefault(d["scope"].strip("/"), []).append(d)
     out = {}
+    tx = _tx(memory)
     for scope, rows in sorted(by_scope.items()):
         lines = ["---", "paths:", f'  - "{scope}"', f'  - "{scope}/**"', "---", RULE_NOTICE, "",
-                 f"## Project decisions (Cairn) for `{scope}/`", ""]
+                 "## " + tx["heading_scoped"].format(scope=scope), ""]
         for d in rows:
-            lines += _entry(d)
+            lines += _entry(d, tx)
         out[_rule_name(scope)] = "\n".join(lines) + "\n"
     return out
 

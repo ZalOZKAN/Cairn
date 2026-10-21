@@ -49,3 +49,4 @@ def load(project_dir: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+

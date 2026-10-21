@@ -173,3 +173,35 @@ def test_propose_from_git_parses_and_filters():
     assert [i["decision"] for i in items] == ["Use uv for env management"]
     assert propose_from_git("x", lambda p, s: None) is None
     assert propose_from_git("x", lambda p, s: "no json here") == []
+
+
+def _transcript(tmp_path, assistant_text):
+    import json
+    p = tmp_path / "t.jsonl"
+    p.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": assistant_text}]}}),
+                 encoding="utf-8")
+    return str(p)
+
+
+def test_a_short_yes_after_a_proposal_reminds_with_the_proposal_quoted(tmp_path):
+    from cairn.memory.capture import decision_language_reminder
+    path = _transcript(tmp_path, "Two options. Önerim Redis: oturumlar kısa ömürlü. Redis ile gidelim mi?")
+    msg = decision_language_reminder({"prompt": "Tamam", "transcript_path": path})
+    assert msg and "Redis" in msg and "record_decision" in msg
+
+
+def test_a_short_yes_after_a_status_message_stays_silent(tmp_path):
+    from cairn.memory.capture import decision_language_reminder
+    path = _transcript(tmp_path, "Done. I edited the file and the tests pass.")
+    assert decision_language_reminder({"prompt": "ok", "transcript_path": path}) is None
+
+
+def test_a_long_message_is_never_treated_as_a_bare_yes(tmp_path):
+    from cairn.memory.capture import decision_language_reminder
+    path = _transcript(tmp_path, "Should we use Redis?")
+    assert decision_language_reminder({"prompt": "ok but first fix the failing test in the auth module", "transcript_path": path}) is None
+
+
+def test_missing_transcript_never_breaks_the_hook(tmp_path):
+    from cairn.memory.capture import decision_language_reminder
+    assert decision_language_reminder({"prompt": "ok", "transcript_path": str(tmp_path / "nope.jsonl")}) is None

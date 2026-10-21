@@ -114,6 +114,42 @@ def _empty_data(filt: str) -> dict[str, Any]:
     }
 
 
+def ui_and_health(config: dict, project_dir: Path, db_path: Path) -> dict[str, Any]:
+    """Interface language and the health panel: quarantined decisions,
+    capture rate from transcripts, how often Cairn stepped in. Each part is
+    best-effort; a failure leaves it empty rather than breaking the page."""
+    from cairn.interface.i18n import DASHBOARD_STRINGS, LANGUAGES, current_language
+    from cairn.memory.stats import load
+    health: dict[str, Any] = {"quarantined": 0, "signals": None, "missed": None, "capture_rate": None}
+    try:
+        if db_path.exists():
+            with sqlite_connect(db_path) as conn:
+                health["quarantined"] = conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE kind='decision' AND invalidated_reason LIKE 'quarantined:%'"
+                ).fetchone()[0]
+    except Exception:
+        pass
+    try:
+        from cairn.memory.usage import project_report
+        rep = project_report(project_dir, days=30)
+        health.update(signals=rep["signals"], missed=rep["missed"], capture_rate=rep["capture_rate"])
+    except Exception:
+        pass
+    stats = load(project_dir)
+    tools = stats.get("tools") or {}
+
+    def hits(name: str) -> int:
+        return int((tools.get(name) or {}).get("hits", 0))
+
+    # Times Cairn changed what the agent saw or did: a rejected approach found,
+    # a forbidden edit blocked, decisions shown before editing a file.
+    health["helped"] = {"rejected_found": hits("check_approach"), "edits_blocked": hits("guard"),
+                        "reminders": hits("for_path_hook") + hits("decisions_for_path"),
+                        "recorded": int((tools.get("record_decision") or {}).get("calls", 0))}
+    return {"ui": {"lang": current_language(config), "languages": LANGUAGES, "strings": DASHBOARD_STRINGS},
+            "health": health}
+
+
 def _load_decisions(conn: sqlite3.Connection, filt: str, scope: str = "project") -> list[dict]:
     where = "WHERE kind='decision'"
     if filt == "active":
@@ -223,6 +259,7 @@ def write_dashboard(project_dir: Path, filt: str = "all") -> Path:
     data = collect_dashboard_data(
         db_path, filt=filt, global_db_path=global_db_path, other_projects=other_projects
     )
+    data.update(ui_and_health(config, project_dir, db_path))
     html = render_dashboard_html(data)
     out_dir = project_dir / ".cairn" / "persistence"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -245,6 +282,7 @@ def dashboard_command(
     data = collect_dashboard_data(
         db_path, filt=filt, global_db_path=global_db_path, other_projects=other_projects
     )
+    data.update(ui_and_health(config, project_dir, db_path))
     if fmt == "json":
         typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
         return
@@ -385,8 +423,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <header class="border-b" style="border-color: var(--border-color); background-color: var(--header-bg);">
   <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-2">
     <div>
-      <h1 class="text-xl font-bold">Cairn: Decision Memory</h1>
-      <p class="text-xs text-gray-400">Search here before re-arguing a call your team already made. Decisions with no recorded reasoning are flagged below, those are worth revisiting. Generated <span id="genAt"></span></p>
+      <h1 class="text-xl font-bold" data-i18n="title">Cairn: Decision Memory</h1>
+      <p class="text-xs text-gray-400"><span data-i18n="subtitle">Search here before re-arguing a call your team already made. Generated</span> <span id="genAt"></span></p>
     </div>
     <div class="flex items-center gap-6">
       <div id="projectSwitcherWrap" style="position:relative; display:none;">
@@ -395,8 +433,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         </button>
         <div id="projectSwitcherMenu" class="hidden"></div>
       </div>
+      <label class="text-xs flex items-center gap-1"><span data-i18n="language">Language</span>
+        <select id="langSelect" class="rounded-lg border text-xs px-1 py-1" style="border-color: var(--border-color); background-color: var(--card-bg); color: var(--text-main);"></select>
+      </label>
       <button id="themeToggle" class="px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors" style="border-color: var(--border-color); background-color: var(--card-bg); color: var(--text-main);">
-        🌓 Toggle Theme
+        🌓 <span data-i18n="theme">Toggle Theme</span>
       </button>
       <div class="flex gap-4 text-sm" id="headerCounts"></div>
     </div>
@@ -411,25 +452,25 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="flex items-center gap-3 flex-wrap">
       <div class="search-wrap">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="searchInput" type="text" placeholder="Search decisions...">
+        <input id="searchInput" type="text" placeholder="Search decisions..." data-i18n-placeholder="search">
       </div>
       <div class="toolbar-cluster">
-        <span class="toolbar-label">Status</span>
+        <span class="toolbar-label" data-i18n="status">Status</span>
         <div class="toolbar-group">
-          <button class="filter-btn active" data-filter="all">All</button>
-          <button class="filter-btn" data-filter="active">Active</button>
-          <button class="filter-btn" data-filter="invalidated">Invalidated</button>
-          <button class="filter-btn" data-filter="recent">Last 14d</button>
-          <button class="filter-btn" data-filter="needs-docs" title="Decisions with no recorded reasoning">Needs docs</button>
+          <button class="filter-btn active" data-filter="all" data-i18n="all">All</button>
+          <button class="filter-btn" data-filter="active" data-i18n="active">Active</button>
+          <button class="filter-btn" data-filter="invalidated" data-i18n="invalidated">Invalidated</button>
+          <button class="filter-btn" data-filter="recent" data-i18n="recent">Last 14d</button>
+          <button class="filter-btn" data-filter="needs-docs" title="Decisions with no recorded reasoning" data-i18n="needs_docs">Needs docs</button>
         </div>
       </div>
       <span id="resultCount"></span>
     </div>
     <div class="toolbar-cluster" style="align-items: flex-end;">
-      <span class="toolbar-label">View</span>
+      <span class="toolbar-label" data-i18n="view">View</span>
       <div class="toolbar-group">
-        <button id="viewGraphBtn" class="view-btn active">Graph</button>
-        <button id="viewCardsBtn" class="view-btn">Cards</button>
+        <button id="viewGraphBtn" class="view-btn active" data-i18n="graph">Graph</button>
+        <button id="viewCardsBtn" class="view-btn" data-i18n="cards">Cards</button>
       </div>
     </div>
   </div>
@@ -438,7 +479,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <section class="max-w-6xl mx-auto px-6 pb-6" id="graphSection">
   <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
     <div>
-      <h2 class="text-sm uppercase text-gray-500">Decision Map<span id="graphScopeLabel"></span></h2>
+      <h2 class="text-sm uppercase text-gray-500"><span data-i18n="map">Decision Map</span><span id="graphScopeLabel"></span></h2>
       <p class="text-xs text-gray-500 mt-0.5">Each node: one recorded decision.</p>
     </div>
     <div class="graph-legend text-xs text-gray-500">
@@ -469,15 +510,24 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
 <section class="max-w-6xl mx-auto px-6 pb-12" id="cardsSection" style="display:none;">
   <div class="flex items-center justify-between mb-3">
-    <h2 class="text-sm uppercase text-gray-500">Decisions<span id="cardsScopeLabel"></span></h2>
+    <h2 class="text-sm uppercase text-gray-500"><span data-i18n="decisions">Decisions</span><span id="cardsScopeLabel"></span></h2>
     <div class="text-xs text-gray-400">Click a card for full provenance</div>
   </div>
   <div id="grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>
-  <div id="cardsEmpty" class="hidden text-sm text-gray-500 text-center py-12">No decisions match the current search/filters.</div>
+  <div id="cardsEmpty" class="hidden text-sm text-gray-500 text-center py-12" data-i18n="no_match">No decisions match the current search/filters.</div>
+</section>
+
+<section class="max-w-6xl mx-auto px-6 pt-6" id="healthSection">
+  <h2 class="text-sm uppercase text-gray-500 mb-2" data-i18n="health">Health</h2>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="card rounded-lg p-3" style="cursor:default"><div class="text-xs text-gray-500" data-i18n="helped">Cairn stepped in</div><div class="text-2xl font-semibold" id="hHelped"></div><div class="text-xs text-gray-500" id="hHelpedDetail"></div></div>
+    <div class="card rounded-lg p-3" style="cursor:default"><div class="text-xs text-gray-500" data-i18n="quarantined">Quarantined</div><div class="text-2xl font-semibold" id="hQuarantined"></div></div>
+    <div class="card rounded-lg p-3" style="cursor:default"><div class="text-xs text-gray-500" data-i18n="capture">Decision capture rate</div><div class="text-2xl font-semibold" id="hCapture"></div><div class="text-xs text-gray-500" id="hCaptureDetail"></div></div>
+  </div>
 </section>
 
 <section class="max-w-6xl mx-auto px-6 py-6">
-  <h2 class="text-sm uppercase text-gray-500 mb-2">Activity (30 days, this project)</h2>
+  <h2 class="text-sm uppercase text-gray-500 mb-2" data-i18n="activity">Activity (30 days, this project)</h2>
   <canvas id="activity" height="60"></canvas>
 </section>
 
@@ -492,12 +542,44 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <footer class="text-center text-xs text-gray-500 py-6 border-t" style="border-color: var(--border-color);">
-  Generated by Cairn. No server, no telemetry, just an HTML file.
+  <span data-i18n="footer">Generated by Cairn. No server, no telemetry, just an HTML file.</span>
 </footer>
 
 <script>
 const data = JSON.parse(document.getElementById('cairn-data').textContent);
 document.getElementById('genAt').textContent = data.generated_at;
+
+// ------------------------- language + health -------------------------
+const ui = data.ui || {lang: 'en', languages: {en: 'English'}, strings: {}};
+function tr(key) {
+  const lang = localStorage.getItem('cairn-lang') || ui.lang;
+  return ((ui.strings[lang] || {})[key]) || ((ui.strings.en || {})[key]) || '';
+}
+function applyLanguage() {
+  document.querySelectorAll('[data-i18n]').forEach(el => { const v = tr(el.dataset.i18n); if (v) el.textContent = v; });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { const v = tr(el.dataset.i18nPlaceholder); if (v) el.placeholder = v; });
+  document.documentElement.lang = localStorage.getItem('cairn-lang') || ui.lang;
+  renderHealth();
+}
+function renderHealth() {
+  const h = data.health;
+  if (!h) { document.getElementById('healthSection').style.display = 'none'; return; }
+  const hp = h.helped || {};
+  const stepped = (hp.rejected_found || 0) + (hp.edits_blocked || 0) + (hp.reminders || 0);
+  document.getElementById('hHelped').textContent = stepped;
+  document.getElementById('hHelpedDetail').textContent =
+    `${hp.rejected_found || 0} ${tr('h_rejected')} · ${hp.edits_blocked || 0} ${tr('h_blocked')} · ${hp.reminders || 0} ${tr('h_reminders')} · ${hp.recorded || 0} ${tr('h_recorded')}`;
+  document.getElementById('hQuarantined').textContent = h.quarantined;
+  document.getElementById('hCapture').textContent = h.capture_rate == null ? tr('no_data') : Math.round(h.capture_rate * 100) + '%';
+  document.getElementById('hCaptureDetail').textContent = h.signals ? `${h.missed} / ${h.signals} ${tr('missed')}` : '';
+}
+const langSelect = document.getElementById('langSelect');
+Object.entries(ui.languages).forEach(([code, name]) => {
+  const o = document.createElement('option'); o.value = code; o.textContent = name; langSelect.appendChild(o);
+});
+langSelect.value = localStorage.getItem('cairn-lang') || ui.lang;
+langSelect.addEventListener('change', () => { localStorage.setItem('cairn-lang', langSelect.value); applyLanguage(); });
+applyLanguage();
 
 const headerCounts = document.getElementById('headerCounts');
 headerCounts.innerHTML = data.has_global

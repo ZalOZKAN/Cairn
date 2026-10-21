@@ -21,7 +21,9 @@ def register_project(project_dir: Path, registry_path: Path) -> None:
     project_dir = project_dir.resolve()
     try:
         registry_path.parent.mkdir(parents=True, exist_ok=True)
-        projects = _read(registry_path)
+        # Drop projects whose folder is gone (deleted repos, temp dirs), so
+        # the registry cannot grow without bound.
+        projects = {k: v for k, v in _read(registry_path).items() if Path(k).is_dir()}
         # Re-insert at the end so file order is registration recency, the
         # tie-break list_projects falls back on when timestamps collide.
         projects.pop(str(project_dir), None)
@@ -39,7 +41,7 @@ def register_project(project_dir: Path, registry_path: Path) -> None:
 
 def list_projects(registry_path: Path) -> list[dict]:
     """All registered projects, most recently seen first."""
-    projects = _read(registry_path)
+    projects = {k: v for k, v in _read(registry_path).items() if Path(k).is_dir()}
     # Coarse clocks (~15.6 ms on Windows before Python 3.13) can give two quick
     # registrations the same last_seen; reversed() + stable sort puts the later
     # registration first among equals.

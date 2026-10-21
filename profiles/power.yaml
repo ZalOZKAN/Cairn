@@ -1,4 +1,4 @@
-# Cairn, Power profile
+# Cairn: Power profile
 # Hybrid SQLite + ChromaDB, larger sliding window, conflict detection on.
 
 memory:
@@ -16,14 +16,6 @@ memory:
   conflict:
     enabled: true
     model: claude-haiku-4-5-20251001
-
-context:
-  max_tokens: 2000
-  summarize:
-    enabled: true
-    threshold_tokens: 1500
-    target_tokens: 500
-    model: groq/llama-3.3-70b-versatile
 
 memory_helper_model: claude-haiku-4-5-20251001
 

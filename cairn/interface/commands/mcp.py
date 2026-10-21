@@ -50,7 +50,7 @@ _HOOK_SNIPPETS = {
     "claude-code": lambda cmd: json.dumps({
         "hooks": {
             "SessionStart": [
-                {"hooks": [{"type": "command", "command": f"{cmd} memory boot"}]}
+                {"hooks": [{"type": "command", "command": f"{cmd} memory context"}]}
             ],
             # Injects the decisions scoped to the file about to be edited.
             "PreToolUse": [
@@ -96,7 +96,7 @@ _HOOK_SNIPPETS = {
 
 _HOOK_UNVERIFIED_NOTE = (
     "No verified SessionStart-equivalent hook recipe for this host yet. "
-    "Memory still surfaces without one: the agent can call `memory_boot` "
+    "Memory still surfaces without one: the agent can call `memory_context` "
     "itself at any point. This only removes the need to ask. If you've "
     "confirmed a working recipe on this host, please contribute it (PR)."
 )

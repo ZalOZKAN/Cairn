@@ -1,7 +1,6 @@
 """
-ContextInjector: produce the boot context to feed an AI at session start.
+ContextInjector: produce the session context to feed an AI at session start.
 
-Goal: ~1100 tokens of fixed boot cost (instead of 70-80k).
 
 Layers (lazy, only present ones are included):
   L1: state.json          ~200 tokens  : active task, status
@@ -24,7 +23,7 @@ from cairn.memory.session import SessionManager
 
 AGENT_GUIDE = (
     "Cairn keeps this project's decisions and carries them between tools. Every "
-    "active decision is already in AGENTS.md (and in `memory_boot`); follow them "
+    "active decision is already in AGENTS.md (and in `memory_context`); follow them "
     "without looking them up again. Whenever a choice between options is settled "
     "(library, pattern, data model, API shape, trade-off), call `record_decision` "
     "with reasoning, the rejected alternatives, and `scope_path` when it applies to "
@@ -54,7 +53,7 @@ class ContextInjector:
         decisions: str | None = None,
     ) -> str:
         """
-        Build the boot inject string.
+        Build the session context string.
 
         fmt:
           "text"   → pasteable into any AI
@@ -68,16 +67,6 @@ class ContextInjector:
         if fmt == "json":
             return self._build_json_format(include_memory, decisions)
         return self._build_text_format(include_memory, decisions)
-
-    def estimate_tokens(
-        self,
-        fmt: str = "text",
-        include_memory: list[str] | None = None,
-        decisions: str | None = None,
-    ) -> int:
-        """Approximate token count."""
-        content = self.build(fmt, include_memory=include_memory, decisions=decisions)
-        return len(content) // 4
 
     # ── Format builders ────────────────────────────────────────────────
 
@@ -169,7 +158,7 @@ class ContextInjector:
     def build_system_prompt_injection(self) -> str:
         """
         Short context to append to the system prompt inside Agent.run().
-        Not a full boot, just active-task info.
+        Not the full session context, just active-task info.
         ~100-200 tokens.
         """
         state = self.session_mgr.load_state()

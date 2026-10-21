@@ -22,7 +22,7 @@ def test_claude_code_hook_uses_command_type_not_mcp_tool():
     assert "SessionStart" in result.stdout
     assert '"type": "command"' in result.stdout
     assert '"type": "mcp_tool"' not in result.stdout
-    assert "memory boot" in result.stdout
+    assert "memory context" in result.stdout
 
 
 def test_claude_code_hook_is_valid_json():

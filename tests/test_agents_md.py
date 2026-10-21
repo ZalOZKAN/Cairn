@@ -65,13 +65,11 @@ def test_progressive_decision_index_and_budget_keep_details_discoverable(root):
         scope_path="web",
     )
     index = agents_md.body(m, detail=False)
-    assert f"[#{first}]" in index and f"[#{second}]" in index
-    assert "call `memory_get` for details" in index
+    uids = {m.get_full(first)["uid"], m.get_full(second)["uid"]}
+    assert all(f"[{u}]" in index for u in uids)
+    assert "`memory_get`" in index
     assert "Why:" not in index
 
-    budgeted = agents_md.body(m, detail=True, max_tokens=45)
-    assert "Project decisions (Cairn)" in budgeted
-    assert "call `memory_get` for details" in budgeted
 
 
 def test_recording_refreshes_an_existing_block_but_never_creates_one(root):

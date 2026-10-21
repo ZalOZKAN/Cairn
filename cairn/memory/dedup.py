@@ -1,5 +1,5 @@
 """
-Memory deduplication, merge near-duplicate records.
+Memory deduplication: merge near-duplicate records.
 
 Strategies:
 1. Hash dedup (always on): if sha1(prompt+response) matches, bump importance
@@ -12,9 +12,9 @@ Both the semantic beta path and the basic hash check live here.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import re
 from typing import TYPE_CHECKING
 
+from cairn.memory.lang import NUMBER_RE, is_negated, negation_differs, words
 from cairn.memory.memory import sqlite_connect
 
 if TYPE_CHECKING:
@@ -22,9 +22,12 @@ if TYPE_CHECKING:
 
 
 DEFAULT_THRESHOLD = 0.92
-WORD_RE = re.compile(r"[a-z0-9_./-]{3,}")
-NEGATION = {"not", "never", "without", "no", "avoid", "instead"}
-NUMBER_RE = re.compile(r"\b(?:v?\d+(?:\.\d+){0,2}|\d+)\b", re.IGNORECASE)
+# Calibrated with scripts/calibrate_candidates.py on hand-labeled pairs (tuning
+# plus held-out): the old 0.75 / 0.45 caught 2 of 8 rewordings and the old 0.35
+# conflict overlap missed 2 of 9 conflicts. Re-run the script after changing.
+DUPLICATE_SCORE = 0.5
+RELATED_SCORE = 0.2
+CONFLICT_OVERLAP = 0.25
 
 
 def _bump_existing(memory: "Memory", row_id: int) -> None:
@@ -49,7 +52,7 @@ def maybe_merge(memory: "Memory", entry: dict) -> bool:
     if not cfg.get("enabled", True):
         return False
 
-    # 1) Hash match, exact same content
+    # 1) Hash match: exact same content
     h = entry.get("content_hash")
     if h:
         with sqlite_connect(memory.db_path) as conn:
@@ -64,7 +67,7 @@ def maybe_merge(memory: "Memory", entry: dict) -> bool:
                 return True
             return False
 
-    # 2) Semantic dedup, if Chroma is available, check cosine similarity
+    # 2) Semantic dedup: if Chroma is available, check cosine similarity
     chroma = getattr(memory, "_chroma", None)
     threshold = float(cfg.get("threshold", DEFAULT_THRESHOLD))
     if chroma is not None:
@@ -98,21 +101,39 @@ def maybe_merge(memory: "Memory", entry: dict) -> bool:
 
 def candidate_relation(left: str, right: str) -> tuple[str, float]:
     """Classify a possible duplicate without deleting or merging anything."""
-    left_words = set(WORD_RE.findall(left.lower()))
-    right_words = set(WORD_RE.findall(right.lower()))
+    left_words, right_words = words(left), words(right)
     if not left_words or not right_words:
         return "none", 0.0
     overlap = left_words & right_words
     score = len(overlap) / len(left_words | right_words)
-    if bool(NEGATION & (left_words ^ right_words)):
-        return "protected-difference", score
-    if NUMBER_RE.findall(left) != NUMBER_RE.findall(right):
-        return "protected-difference", score
-    if score >= 0.75 and len(overlap) >= 3:
+    differs = negation_differs(left, right) or NUMBER_RE.findall(left) != NUMBER_RE.findall(right)
+    if differs:
+        # Only worth flagging when they are about the same thing.
+        return ("protected-difference" if score >= RELATED_SCORE else "none"), score
+    if score >= DUPLICATE_SCORE and len(overlap) >= 3:
         return "possible-duplicate", score
-    if score >= 0.45 and len(overlap) >= 2:
+    if score >= RELATED_SCORE and len(overlap) >= 2:
         return "related", score
     return "none", score
+
+
+def conflict_relation(target: str, prior: str, rejected: list[str] | None = None) -> tuple[str, float]:
+    """Classify a new decision against an active one: "possible-conflict"
+    when they share a topic but differ in negation or numbers,
+    "rejected-alternative" when the new one picks an option the prior one
+    rejected, else "none". Warning only; nothing is changed."""
+    target, prior = target.casefold(), prior.casefold()
+    tw, pw = words(target), words(prior)
+    overlap = len(tw & pw) / len(tw | pw) if tw | pw else 0.0
+    # Picking an option the prior decision rejected is worth a warning even
+    # when the wording shares little else.
+    if any(len(opt) >= 4 and opt.casefold() in target for opt in rejected or []):
+        return "rejected-alternative", overlap
+    if overlap < CONFLICT_OVERLAP:
+        return "none", overlap
+    if NUMBER_RE.findall(target) != NUMBER_RE.findall(prior) or is_negated(target) != is_negated(prior) or negation_differs(target, prior):
+        return "possible-conflict", overlap
+    return "none", overlap
 
 
 def configure(memory: "Memory", enabled: bool = True, threshold: float = DEFAULT_THRESHOLD) -> None:
