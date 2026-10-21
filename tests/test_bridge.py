@@ -1,6 +1,7 @@
 """Memory bridge: importing another tool's own memory as Cairn decisions."""
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,9 +36,18 @@ def _cli(root: Path, *args: str) -> subprocess.CompletedProcess:
 
 # ---- Claude Code auto-memory ---------------------------------------------
 
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter paths only resolve on Windows")
 def test_claude_project_path_is_encoded_like_the_real_tool():
     assert (bridge.claude_memory_dir(Path("C:/Projects/Cairn"), claude_home=Path("H"))
            == Path("H") / "projects" / "C--Projects-Cairn" / "memory")
+
+
+def test_claude_project_path_encoding_replaces_every_non_alphanumeric(tmp_path):
+    project = tmp_path / "my.project_x"
+    project.mkdir()
+    encoded = bridge.claude_memory_dir(project, claude_home=Path("H")).parent.name
+    assert encoded == re.sub(r"[^a-zA-Z0-9]", "-", str(project.resolve()))
+    assert re.fullmatch(r"[a-zA-Z0-9-]+", encoded)
 
 
 def _write_claude_memory(base: Path) -> Path:
