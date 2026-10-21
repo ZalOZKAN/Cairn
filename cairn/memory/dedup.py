@@ -12,6 +12,7 @@ Both the semantic beta path and the basic hash check live here.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import TYPE_CHECKING
 
 from cairn.memory.memory import sqlite_connect
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
 
 DEFAULT_THRESHOLD = 0.92
+WORD_RE = re.compile(r"[a-z0-9_./-]{3,}")
+NEGATION = {"not", "never", "without", "no", "avoid", "instead"}
+NUMBER_RE = re.compile(r"\b(?:v?\d+(?:\.\d+){0,2}|\d+)\b", re.IGNORECASE)
 
 
 def _bump_existing(memory: "Memory", row_id: int) -> None:
@@ -90,6 +94,25 @@ def maybe_merge(memory: "Memory", entry: dict) -> bool:
             return False
 
     return False
+
+
+def candidate_relation(left: str, right: str) -> tuple[str, float]:
+    """Classify a possible duplicate without deleting or merging anything."""
+    left_words = set(WORD_RE.findall(left.lower()))
+    right_words = set(WORD_RE.findall(right.lower()))
+    if not left_words or not right_words:
+        return "none", 0.0
+    overlap = left_words & right_words
+    score = len(overlap) / len(left_words | right_words)
+    if bool(NEGATION & (left_words ^ right_words)):
+        return "protected-difference", score
+    if NUMBER_RE.findall(left) != NUMBER_RE.findall(right):
+        return "protected-difference", score
+    if score >= 0.75 and len(overlap) >= 3:
+        return "possible-duplicate", score
+    if score >= 0.45 and len(overlap) >= 2:
+        return "related", score
+    return "none", score
 
 
 def configure(memory: "Memory", enabled: bool = True, threshold: float = DEFAULT_THRESHOLD) -> None:

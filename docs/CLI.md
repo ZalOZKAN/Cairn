@@ -60,6 +60,13 @@ Generate the session boot context to copy/inject into your AI assistant at the s
 - **Options:**
   - `--format, -f [text|claude|json]`: Select output format (default: `text`).
   - `--copy, -c`: Copy the generated output directly to the system clipboard (requires `pyperclip`).
+ - The MCP `memory_boot` tool defaults to an index of active decisions. Pass `decision_mode: "full"` to request full decision details, or `token_budget` to keep the boot package within an approximate token budget. Index rows include the decision id, scope, and estimated detail size; use `memory_get` for a selected record.
+
+`record_decision` returns deterministic `duplicate_candidates` when an active
+decision in the same scope looks identical or closely related. These are
+warnings only: Cairn never deletes or invalidates a record automatically.
+`memory_thread` accepts `as_of` to show the decision state at an ISO-8601
+point in time. `record_decision` accepts `valid_from` for backdated decisions.
   - `--memory, -m <text>`: Load extra memory files from `.cairn/persistence/memory/` on boot.
 
 ### `cairn memory status`

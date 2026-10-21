@@ -55,6 +55,25 @@ def test_block_holds_every_active_decision_in_full(root):
     assert "#1" not in text
 
 
+def test_progressive_decision_index_and_budget_keep_details_discoverable(root):
+    m = _mem(root)
+    first = m.record_decision("Use SQLite for local state", reasoning="no service dependency", scope_path="api")
+    second = m.record_decision(
+        "Use httpOnly cookies for auth",
+        reasoning="limits script access",
+        alternatives=[{"option": "localStorage", "rejected_because": "XSS exposure"}],
+        scope_path="web",
+    )
+    index = agents_md.body(m, detail=False)
+    assert f"[#{first}]" in index and f"[#{second}]" in index
+    assert "call `memory_get` for details" in index
+    assert "Why:" not in index
+
+    budgeted = agents_md.body(m, detail=True, max_tokens=45)
+    assert "Project decisions (Cairn)" in budgeted
+    assert "call `memory_get` for details" in budgeted
+
+
 def test_recording_refreshes_an_existing_block_but_never_creates_one(root):
     m = _mem(root)
     m.record_decision("Use pnpm", scope_path="web")

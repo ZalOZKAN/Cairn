@@ -337,18 +337,17 @@ class CairnMCPServer:
             _tool("memory_boot",
                   "Session boot context.",
                   {"format": {"type": "string", "enum": ["text", "claude", "json"]},
+                   "decision_mode": {"type": "string", "enum": ["full", "index"], "default": "index",
+                                    "description": "index: one line per decision (fetch with memory_get); full: every entry"},
+                   "token_budget": _int("Approximate token cap for the whole boot text; decisions that do not fit stay as index lines"),
                    "include_memory": {"type": "array", "items": {"type": "string"},
                                       "description": "Extra memory file names"}}),
             _tool("memory_status",
                   "Current task, status and last handoff.",
                   {}),
             _tool("record_decision",
-                  "Record a settled decision the moment a choice is made, even in passing ('from now on', 'we "
-                  "agreed', 'drop X', 'we tried X, it failed'). Give reasoning and the rejected alternatives; "
-                  "scope_path if it applies to part of the repo; scope='global' unprompted for a preference that "
-                  "holds in every project. To replace an earlier one pass supersedes (its id) or replaces (a "
-                  "phrase from it). If the response lists possible_supersedes or replace_candidates and one is "
-                  "really replaced, call memory_invalidate on it. A conflicts field is a prompt to ask the user.",
+                  "Record a settled decision with reasoning and rejected alternatives. Use supersedes or replaces "
+                  "to link an earlier decision; conflicts and candidates are warnings.",
                   {"decision": _str("The decision in one sentence"),
                    "reasoning": _str("Why", default=""),
                    "alternatives": {"type": "array", "description": "Rejected options",
@@ -361,6 +360,7 @@ class CairnMCPServer:
                                     "claim": {"type": "string"}}}},
                    "supersedes": _str("Id of the decision this replaces (number, or 'g<n>')"),
                    "replaces": _str("A phrase from the decision this replaces, when the id is unknown"),
+                   "valid_from": _str("ISO-8601 time the decision took effect; past only, default now"),
                    "chose_because": _str("Short tag for the deciding factor", default=""),
                    "importance": _int("1 normal, 2 decision, 3 critical", default=2),
                    "scope_path": _str("Workspace-relative path it applies to. Omit for repo-wide."),
@@ -389,6 +389,7 @@ class CairnMCPServer:
                   {"id": _str("Decision id (number, or 'g<n>')"),
                    "topic": _str("Keyword"),
                    "topic_or_id": _str("Deprecated: use id or topic"),
+                   "as_of": _str("ISO-8601 time; returns only versions active then"),
                    "limit": _int("Max entries", default=20)},
                   required=[]),
             _tool("decision_audit_score",
@@ -471,8 +472,21 @@ def _h_invalidate(srv: CairnMCPServer, args: dict) -> str:
 def _h_boot(srv: CairnMCPServer, args: dict) -> str:
     fmt = args.get("format", "text")
     extras = args.get("include_memory") or []
+    mode = args.get("decision_mode", "index")
+    budget = args.get("token_budget")
+    budget = int(budget) if budget is not None else None
+    index = mode == "index"
+    if budget is None:
+        decisions = srv.project.memory.decisions_block(detail=not index)
+    else:
+        # The budget covers the whole boot text: measure the non-decision
+        # parts first and give the decisions what is left.
+        base = srv.project.injector.estimate_tokens(fmt=fmt, include_memory=extras or None)
+        decisions = srv.project.memory.decisions_block(
+            detail=not index, max_tokens=max(budget - base, 0)
+        )
     return srv.project.injector.build(
-        fmt=fmt, include_memory=extras or None, decisions=srv.project.memory.decisions_block()
+        fmt=fmt, include_memory=extras or None, decisions=decisions
     ) or "(empty)"
 
 
@@ -524,6 +538,12 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
     conflicts = srv.project.memory.check_conflicts(
         args["decision"], args.get("reasoning") or ""
     )
+    duplicates = srv.project.memory.duplicate_candidates(
+        args["decision"], args.get("reasoning"), args.get("scope_path")
+    )
+    conflict_candidates = srv.project.memory.conflict_candidates(
+        args["decision"], args.get("reasoning"), args.get("scope_path")
+    )
 
     try:
         new_id = _record(srv, args, supersedes)
@@ -534,6 +554,10 @@ def _h_record_decision(srv: CairnMCPServer, args: dict) -> str:
         res["warning"] = warning
     if conflicts:
         res["conflicts"] = conflicts
+    if duplicates:
+        res["duplicate_candidates"] = duplicates
+    if conflict_candidates:
+        res["conflict_candidates"] = conflict_candidates
     if replace_candidates:
         res["replace_candidates"] = replace_candidates
     elif supersedes is None and args.get("scope", "project") != "global":
@@ -557,6 +581,7 @@ def _record(srv: CairnMCPServer, args: dict, supersedes: str | None) -> int | st
         scope=args.get("scope", "project"),
         recorded_by=srv.client_name,
         forbid=args.get("forbid") or None,
+        valid_from=args.get("valid_from") or None,
     )
 
 
@@ -584,7 +609,9 @@ def _h_memory_thread(srv: CairnMCPServer, args: dict) -> str:
     else:
         return json.dumps({"error": "Missing parameter: 'id' or 'topic' is required"}, ensure_ascii=False)
 
-    rows = srv.project.memory.thread(target, limit=int(args.get("limit", 20)))
+    rows = srv.project.memory.thread(
+        target, limit=int(args.get("limit", 20)), as_of=args.get("as_of") or None
+    )
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
 

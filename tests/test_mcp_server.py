@@ -166,6 +166,92 @@ def test_memory_thread_by_keyword(srv):
     assert all("Redis" not in r["decision"] for r in matches)
 
 
+def test_memory_thread_by_keyword_is_chronological_across_scopes(srv):
+    _call(srv, "record_decision", {"decision": "Use SQLite for storage"})
+    _call(srv, "record_decision", {"decision": "Use Postgres for storage"})
+    matches = json.loads(_call(srv, "memory_thread", {"topic_or_id": "storage"}))
+    assert [r["decision"] for r in matches] == [
+        "Use SQLite for storage",
+        "Use Postgres for storage",
+    ]
+
+
+def test_superseded_decision_does_not_get_supersedes_audit_point(srv):
+    old = json.loads(_call(srv, "record_decision", {
+        "decision": "Use localStorage for JWT",
+        "reasoning": "initial prototype",
+    }))["id"]
+    _call(srv, "record_decision", {
+        "decision": "Use httpOnly cookies for JWT",
+        "reasoning": "reduces token exposure",
+        "supersedes": old,
+    })
+    score = json.loads(_call(srv, "decision_audit_score", {"id": old}))
+    assert score["checks"]["has_supersedes"] is False
+    assert score["score"] == 1
+
+
+def test_record_decision_returns_proposal_only_duplicate_candidate(srv):
+    _call(srv, "record_decision", {
+        "decision": "Use SQLite for local storage",
+        "reasoning": "Keeps the project local",
+    })
+    result = json.loads(_call(srv, "record_decision", {
+        "decision": "Use SQLite for local storage",
+        "reasoning": "Keeps the project local",
+    }))
+    assert result["duplicate_candidates"][0]["relation"] == "exact-duplicate"
+
+
+def test_memory_thread_supports_as_of_validity_windows(srv):
+    old = json.loads(_call(srv, "record_decision", {
+        "decision": "Use SQLite for the cache",
+        "valid_from": "2025-01-01T00:00:00+00:00",
+    }))["id"]
+    _call(srv, "record_decision", {
+        "decision": "Use Redis for the cache",
+        "supersedes": old,
+        "valid_from": "2026-01-01T00:00:00+00:00",
+    })
+    before = json.loads(_call(srv, "memory_thread", {
+        "topic_or_id": str(old), "as_of": "2025-06-01T00:00:00+00:00",
+    }))
+    after = json.loads(_call(srv, "memory_thread", {
+        "topic_or_id": str(old), "as_of": "2026-06-01T00:00:00+00:00",
+    }))
+    assert [row["decision"] for row in before] == ["Use SQLite for the cache"]
+    assert [row["decision"] for row in after] == ["Use Redis for the cache"]
+
+
+def test_record_decision_rejects_future_valid_from(srv):
+    out = json.loads(_call(srv, "record_decision", {
+        "decision": "Use SQLite for the cache",
+        "valid_from": "2999-01-01T00:00:00+00:00",
+    }))
+    assert "error" in out and "future" in out["error"]
+
+
+def test_memory_thread_orders_mixed_timezones_by_instant(srv):
+    first = json.loads(_call(srv, "record_decision", {"decision": "Use SQLite for sessions"}))["id"]
+    second = json.loads(_call(srv, "record_decision", {"decision": "Use Redis for sessions"}))["id"]
+    rows = json.loads(_call(srv, "memory_thread", {"topic": "sessions"}))
+    assert [r["id"] for r in rows] == [first, second]
+
+
+def test_memory_boot_token_budget_bounds_whole_output(srv):
+    for i in range(12):
+        _call(srv, "record_decision", {
+            "decision": f"Decision number {i} about module{i}",
+            "reasoning": "long reasoning " * 40,
+        })
+    full = _call(srv, "memory_boot", {"decision_mode": "full"})
+    capped = _call(srv, "memory_boot", {"decision_mode": "full", "token_budget": 400})
+    index = _call(srv, "memory_boot", {})
+    assert len(capped) < len(full)
+    assert len(index) < len(full)
+    assert "[#1]" in capped or "[#1]" in index
+
+
 # --- auto-save triggers (Phase 2 Stream A) -------------------------------
 
 def _stub_helper(srv, payload: dict | None):
@@ -365,10 +451,10 @@ def test_names_and_required_parameters_did_not_change(srv):
     assert by_name["record_decision"]["required"] == ["decision"]
     assert set(by_name["record_decision"]["properties"]) == {
         "decision", "reasoning", "alternatives", "evidence", "supersedes", "replaces", "chose_because",
-        "importance", "scope_path", "scope", "forbid"}
+        "importance", "scope_path", "scope", "forbid", "valid_from"}
     assert by_name["memory_store"]["required"] == ["prompt", "response"]
     assert set(by_name["memory_save"]["properties"]) == {"summary", "next_step"}
-    assert set(by_name["memory_thread"]["properties"]) == {"id", "topic", "topic_or_id", "limit"}
+    assert set(by_name["memory_thread"]["properties"]) == {"id", "topic", "topic_or_id", "as_of", "limit"}
     assert by_name["memory_boot"]["properties"]["format"]["enum"] == ["text", "claude", "json"]
 
 

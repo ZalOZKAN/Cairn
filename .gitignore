@@ -18,8 +18,10 @@ build/
 _dev/
 CHANGELOG.md
 
-# Per-machine Claude Code settings (personal paths, allowlists)
-.claude/settings.local.json
+# Per-machine editor and Claude Code state (personal paths, allowlists, locks)
+.claude/
+.vscode/
+.idea/
 
 # Downloaded external benchmark datasets (LoCoMo is CC BY-NC, never vendor
 # it into this MIT repo; fetched on demand by scripts/download_benchmark_data.py)

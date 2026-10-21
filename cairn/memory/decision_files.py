@@ -18,7 +18,7 @@ import yaml
 DECISIONS_DIRNAME = "decisions"
 
 _FRONT_KEYS = (
-    "uid", "date", "status", "importance", "path", "supersedes",
+    "uid", "date", "valid_from", "status", "importance", "path", "supersedes",
     "superseded_by", "valid_until", "invalidated_reason", "anchor_commit", "recorded_by", "forbid",
 )
 _ITEM_RE = re.compile(r"^- \*\*(.+?)\*\*:\s?(.*)$")
@@ -83,8 +83,9 @@ def parse(text: str) -> dict[str, Any]:
     for k in ("supersedes", "superseded_by", "anchor_commit", "recorded_by"):
         if out[k] is not None:
             out[k] = str(out[k])
-    if out["date"] is not None and not isinstance(out["date"], str):
-        out["date"] = out["date"].isoformat()
+    for key in ("date", "valid_from"):
+        if out[key] is not None and not isinstance(out[key], str):
+            out[key] = out[key].isoformat()
     if out["valid_until"] is not None and not isinstance(out["valid_until"], str):
         out["valid_until"] = out["valid_until"].isoformat()
     out["importance"] = int(front.get("importance") or 2)

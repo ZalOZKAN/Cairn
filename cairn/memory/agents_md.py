@@ -107,8 +107,23 @@ def entries_by_id(memory) -> dict[int, list[str]]:
     return {d["id"]: _entry(d) for d in _active_decisions(memory)}
 
 
-def body(memory) -> str:
-    """The block's content without markers; also used as boot context."""
+def _token_estimate(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def _index_entry(d: dict) -> str:
+    scope = d["scope"] or "repo-wide"
+    full = "\n".join(_entry(d))
+    return f"- [#{d['id']}] {_one_line(d['decision'])} ({scope}; ~{_token_estimate(full)} tokens; call `memory_get` for details)"
+
+
+def body(memory, detail: bool = True, max_tokens: int | None = None) -> str:
+    """The block's content without markers; also used as boot context.
+
+    ``detail=False`` emits an index. With ``max_tokens``, full entries are
+    packed in deterministic order and entries that do not fit remain as index
+    lines, so the caller never loses discoverability.
+    """
     decisions = _active_decisions(memory)
     repo_wide = [d for d in decisions if not d["scope"]]
     by_scope: dict[str, list[dict]] = {}
@@ -117,17 +132,28 @@ def body(memory) -> str:
             by_scope.setdefault(d["scope"], []).append(d)
 
     lines = ["## Project decisions (Cairn)", "", *INSTRUCTIONS, ""]
+    if not detail:
+        max_tokens = 0
+    budget = max_tokens
+    selected: set[int] = set()
+    if detail and budget is not None:
+        packed = "\n".join(lines)
+        for d in decisions:
+            candidate = "\n".join(_entry(d))
+            if _token_estimate(packed + candidate) <= budget:
+                selected.add(d["id"])
+                packed += candidate
     if not decisions:
         lines += ["No decisions recorded yet.", ""]
     if repo_wide:
         lines += ["### Repo-wide", ""]
         for d in repo_wide:
-            lines += _entry(d)
+            lines += _entry(d) if d["id"] in selected or (detail and budget is None) else [_index_entry(d)]
         lines.append("")
     for scope, rows in sorted(by_scope.items()):
         lines += [f"### `{scope}/`", ""]
         for d in rows:
-            lines += _entry(d)
+            lines += _entry(d) if d["id"] in selected or (detail and budget is None) else [_index_entry(d)]
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 

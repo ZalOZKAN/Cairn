@@ -73,6 +73,13 @@ def forbid_to_json(patterns: list[str] | str | None, strict: bool = True) -> str
     return _json.dumps(kept, ensure_ascii=False) if kept else None
 
 
+
+def _as_utc(value: str) -> datetime:
+    """Parse an ISO-8601 string; naive values are taken as UTC."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 class Memory:
     def __init__(self, config: dict, project_dir: Path | str | None = None):
         self._config = config  # kept for lazily-constructed helpers (e.g. ConflictDetector)
@@ -678,6 +685,96 @@ class Memory:
         detector = ConflictDetector(self._config)
         return detector.detect(self, prompt, response)
 
+    def duplicate_candidates(
+        self,
+        decision: str,
+        reasoning: str | None = None,
+        scope_path: str | None = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Return deterministic, propose-only duplicate/related candidates."""
+        from cairn.memory.dedup import candidate_relation
+
+        target = f"{decision} {reasoning or ''}"
+        norm_scope = self._normalize_path(scope_path) if scope_path else None
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, prompt, reasoning, scope_path, content_hash "
+                "FROM memories WHERE kind='decision' AND valid_until IS NULL "
+                "AND ((scope_path IS NULL AND ? IS NULL) OR scope_path = ?) "
+                "ORDER BY id DESC LIMIT 200",
+                (norm_scope, norm_scope),
+            ).fetchall()
+        out = []
+        target_hash = self._content_hash(decision, reasoning or "")
+        for rid, prompt, prior_reasoning, path, content_hash in rows:
+            if content_hash == target_hash:
+                relation, score = "exact-duplicate", 1.0
+            else:
+                relation, score = candidate_relation(
+                    target, f"{prompt} {prior_reasoning or ''}"
+                )
+            if relation != "none":
+                out.append({
+                    "id": rid, "decision": prompt, "scope_path": path,
+                    "relation": relation, "score": round(score, 3),
+                })
+        out.sort(key=lambda row: (-row["score"], -row["id"]))
+        return out[:limit]
+
+    def conflict_candidates(
+        self,
+        decision: str,
+        reasoning: str | None = None,
+        scope_path: str | None = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Return deterministic conflict warnings; never changes stored state."""
+        import json
+
+        from cairn.memory.dedup import NEGATION, NUMBER_RE, WORD_RE
+
+        target = f"{decision} {reasoning or ''}".lower()
+        target_words = set(WORD_RE.findall(target))
+        target_numbers = NUMBER_RE.findall(target)
+        target_negated = bool(NEGATION & target_words)
+        norm_scope = self._normalize_path(scope_path) if scope_path else None
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, prompt, reasoning, alternatives_json, scope_path "
+                "FROM memories WHERE kind='decision' AND valid_until IS NULL "
+                "AND ((scope_path IS NULL AND ? IS NULL) OR scope_path = ?) "
+                "ORDER BY id DESC LIMIT 200",
+                (norm_scope, norm_scope),
+            ).fetchall()
+        out = []
+        for rid, prompt, prior_reasoning, alternatives_json, path in rows:
+            prior = f"{prompt} {prior_reasoning or ''}".lower()
+            words = set(WORD_RE.findall(prior))
+            overlap = len(target_words & words) / len(target_words | words) if target_words | words else 0
+            if overlap < 0.35:
+                continue
+            numbers = NUMBER_RE.findall(prior)
+            negated = bool(NEGATION & words)
+            if numbers != target_numbers or negated != target_negated:
+                out.append({
+                    "id": rid, "decision": prompt, "scope_path": path,
+                    "relation": "possible-conflict", "overlap": round(overlap, 3),
+                })
+                continue
+            if alternatives_json and any(
+                len(str(item.get("option", ""))) >= 4
+                and str(item.get("option", "")).lower() in target
+                for item in json.loads(alternatives_json)
+                if isinstance(item, dict)
+            ):
+                out.append({
+                    "id": rid, "decision": prompt, "scope_path": path,
+                    "relation": "rejected-alternative", "overlap": round(overlap, 3),
+                })
+        out.sort(key=lambda row: (-row["overlap"], -row["id"]))
+        return out[:limit]
+
     def record_decision(
         self,
         decision: str,
@@ -691,6 +788,7 @@ class Memory:
         scope: str = "project",
         recorded_by: str | None = None,
         forbid: list[str] | None = None,
+        valid_from: str | None = None,
     ) -> int | str:
         """Insert a decision row synchronously and return its id.
 
@@ -732,6 +830,14 @@ class Memory:
 
         self.flush()
         now = datetime.now(timezone.utc).isoformat()
+        effective_from = now
+        if valid_from:
+            try:
+                effective_from = _as_utc(valid_from).isoformat()
+            except ValueError as exc:
+                raise ValueError("valid_from must be an ISO-8601 timestamp") from exc
+            if _as_utc(effective_from) > _as_utc(now):
+                raise ValueError("valid_from cannot be in the future")
         alts_json = _json.dumps(alternatives or [], ensure_ascii=False) if alternatives else None
         norm_scope = self._normalize_path(scope_path) if scope_path else None
 
@@ -748,7 +854,7 @@ class Memory:
                     self._extract_keywords(decision + " " + (reasoning or "")),
                     importance,
                     self._content_hash(decision, reasoning or ""),
-                    now,
+                    effective_from,
                     "decision",
                     reasoning,
                     alts_json,
@@ -778,7 +884,7 @@ class Memory:
                     cur = conn.execute(
                         "UPDATE memories SET valid_until=?, invalidated_reason=?, superseded_by=? "
                         "WHERE id=? AND valid_until IS NULL",
-                        (now, f"superseded by #{supersede_marker}", new_id, sup_num_id),
+                        (effective_from, f"superseded by #{supersede_marker}", new_id, sup_num_id),
                     )
                     conn.commit()
                     superseded_ok = cur.rowcount > 0
@@ -791,7 +897,7 @@ class Memory:
                 cur = sup_conn.execute(
                     "UPDATE memories SET valid_until=?, invalidated_reason=?, superseded_by=? "
                     "WHERE id=? AND valid_until IS NULL",
-                    (now, f"superseded by #{supersede_marker}", new_id, sup_num_id),
+                    (effective_from, f"superseded by #{supersede_marker}", new_id, sup_num_id),
                 )
                 sup_conn.commit()
                 superseded_ok = cur.rowcount > 0
@@ -1008,15 +1114,22 @@ class Memory:
         out.sort(key=lambda r: -r["overlap"])
         return {"id": out[0]["id"] if len(out) == 1 else None, "candidates": out[:5]}
 
-    def thread(self, topic_or_id: str | int, limit: int = 20) -> list[dict]:
+    def thread(self, topic_or_id: str | int, limit: int = 20, as_of: str | None = None) -> list[dict]:
         """Chronological list of decision versions on the same topic.
 
-        If int, or a "g<id>" string: walk the supersedes chain (newest
-        first → oldest) in the matching DB (project or global).
+        If int, or a "g<id>" string: walk the supersedes chain from the
+        requested decision toward newer decisions (oldest to newest).
         If a plain string: keyword-overlap group across project decisions,
         plus global decisions when global memory is enabled.
         """
         rows: list[dict] = []
+        as_of_dt = None
+        as_utc = _as_utc
+        if as_of:
+            try:
+                as_of_dt = as_utc(as_of)
+            except ValueError as exc:
+                raise ValueError("as_of must be an ISO-8601 timestamp") from exc
         is_global_id = isinstance(topic_or_id, str) and topic_or_id.startswith("g") and topic_or_id[1:].isdigit()
 
         if isinstance(topic_or_id, int) or is_global_id:
@@ -1028,17 +1141,23 @@ class Memory:
                 while current is not None and current not in seen and len(rows) < limit:
                     seen.add(current)
                     r = conn.execute(
-                        "SELECT id, timestamp, prompt, kind, valid_until, superseded_by "
+                        "SELECT id, timestamp, prompt, kind, valid_from, valid_until, superseded_by "
                         "FROM memories WHERE id=?",
                         (current,),
                     ).fetchone()
                     if not r:
                         break
-                    rows.append({
-                        "id": f"g{r[0]}" if is_global else r[0], "timestamp": r[1], "decision": r[2],
-                        "kind": r[3], "active": r[4] is None, "scope": "global" if is_global else "project",
-                    })
-                    current = r[5]
+                    valid_from, valid_until = r[4], r[5]
+                    in_window = not as_of_dt or (
+                        as_utc(valid_from or r[1]) <= as_of_dt
+                        and (not valid_until or as_utc(valid_until) > as_of_dt)
+                    )
+                    if in_window:
+                        rows.append({
+                            "id": f"g{r[0]}" if is_global else r[0], "timestamp": r[1], "decision": r[2],
+                            "kind": r[3], "active": r[5] is None, "scope": "global" if is_global else "project",
+                        })
+                    current = r[6]
             return rows
 
         keywords = set(self._extract_keywords(str(topic_or_id)).split(","))
@@ -1050,20 +1169,24 @@ class Memory:
         for db_path, is_global in scopes:
             with sqlite_connect(db_path) as conn:
                 all_rows = conn.execute(
-                    "SELECT id, timestamp, prompt, keywords, kind, valid_until "
+                    "SELECT id, timestamp, prompt, keywords, kind, valid_from, valid_until "
                     "FROM memories WHERE kind='decision' ORDER BY timestamp ASC LIMIT 500"
                 ).fetchall()
-            for rid, ts, p, kw, kind, vu in all_rows:
+            for rid, ts, p, kw, kind, vf, vu in all_rows:
                 if not kw:
                     continue
+                if as_of_dt:
+                    start = as_utc(vf or ts)
+                    end = as_utc(vu) if vu else None
+                    if start > as_of_dt or (end and end <= as_of_dt):
+                        continue
                 if keywords & set(kw.split(",")):
                     rows.append({
                         "id": f"g{rid}" if is_global else rid, "timestamp": ts, "decision": p,
                         "kind": kind, "active": vu is None, "scope": "global" if is_global else "project",
                     })
-                    if len(rows) >= limit:
-                        return rows
-        return rows
+        rows.sort(key=lambda r: (as_utc(r["timestamp"]), str(r["id"])))
+        return rows[:limit]
 
     def decision_audit_score(self, mem_id: int | str) -> dict:
         """Return completeness score for a decision: 0-4 of {reasoning, alternatives, evidence, supersedes}."""
@@ -1074,7 +1197,7 @@ class Memory:
             "has_reasoning": bool(full.get("reasoning")),
             "has_alternatives": bool(full.get("alternatives")),
             "has_evidence": bool(full.get("evidence")),
-            "has_supersedes": full.get("supersedes") is not None or full.get("superseded_by") is not None,
+            "has_supersedes": full.get("supersedes") is not None,
         }
         score = sum(1 for v in checks.values() if v)
         missing = [k for k, v in checks.items() if not v]
@@ -1229,10 +1352,10 @@ class Memory:
         return [{"id": rid, "decision": d, "reasoning": r, "path": sp, "forbid": _json.loads(f)}
                 for rid, d, r, sp, f in rows]
 
-    def decisions_block(self) -> str:
-        """Every active decision, as written into AGENTS.md. Used as boot context."""
+    def decisions_block(self, detail: bool = True, max_tokens: int | None = None) -> str:
+        """Render active decisions for AGENTS.md or a progressive boot context."""
         from cairn.memory import agents_md
-        return agents_md.body(self)
+        return agents_md.body(self, detail=detail, max_tokens=max_tokens)
 
     def stale_decisions(self) -> list[dict]:
         with sqlite_connect(self.db_path) as conn:
@@ -1271,13 +1394,13 @@ class Memory:
         import json as _json
         row = conn.execute(
             "SELECT uid, timestamp, prompt, reasoning, alternatives_json, chose_because, "
-            "importance, scope_path, valid_until, invalidated_reason, superseded_by, anchor_commit, "
+            "importance, scope_path, valid_from, valid_until, invalidated_reason, superseded_by, anchor_commit, "
             "recorded_by, forbid_json FROM memories WHERE id=? AND kind='decision'",
             (num_id,),
         ).fetchone()
         if not row:
             return None
-        (uid, ts, decision, reasoning, alts, chose, imp, path, valid_until,
+        (uid, ts, decision, reasoning, alts, chose, imp, path, valid_from, valid_until,
          inv_reason, superseded_by, anchor, recorded_by, forbid_json) = row
         if not uid:
             uid = new_uid(datetime.fromisoformat(ts))
@@ -1295,7 +1418,7 @@ class Memory:
             status = "superseded" if superseded_by is not None else "invalidated"
         return {
             "uid": uid, "date": ts, "status": status, "importance": imp,
-            "path": path, "supersedes": prev[0] if prev else None,
+            "path": path, "valid_from": valid_from, "supersedes": prev[0] if prev else None,
             "superseded_by": sup_by_uid,
             "valid_until": valid_until,
             "invalidated_reason": None if superseded_by is not None else inv_reason,

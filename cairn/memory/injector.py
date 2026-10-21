@@ -69,14 +69,23 @@ class ContextInjector:
             return self._build_json_format(include_memory, decisions)
         return self._build_text_format(include_memory, decisions)
 
-    def estimate_tokens(self, fmt: str = "text") -> int:
+    def estimate_tokens(
+        self,
+        fmt: str = "text",
+        include_memory: list[str] | None = None,
+        decisions: str | None = None,
+    ) -> int:
         """Approximate token count."""
-        content = self.build(fmt)
+        content = self.build(fmt, include_memory=include_memory, decisions=decisions)
         return len(content) // 4
 
     # ── Format builders ────────────────────────────────────────────────
 
-    def _build_text_format(self, include_memory: list[str] | None, decisions: str | None = None) -> str:
+    def _build_text_format(
+        self,
+        include_memory: list[str] | None,
+        decisions: str | None = None,
+    ) -> str:
         """Pasteable-into-any-AI format."""
         sections = []
 

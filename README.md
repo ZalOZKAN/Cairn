@@ -198,6 +198,15 @@ identical on every machine; `cairn check` fails CI if it drifts. The cost
 grows with the number of active decisions, like any always-loaded file;
 Cairn keeps it to the active ones.
 
+**What it saves, and where.** Against a flat markdown file of decisions, delivering only the decisions that apply to the
+file being edited cut total tokens by about two thirds at 1,000 decisions in our benchmark (Claude Code; see `docs/CLI.md` for
+the setting and the numbers). The saving grows with the store. In a small store (a few hundred decisions or fewer) the flat file
+is already small, so no saving is claimed there: in a profile of a coding agent on a small open-source project (24 runs), about a
+sixth of the input tokens went to looking around before the first edit (about a third of the cost after prompt-cache discounts,
+because looking around happens before the cache warms up), which is the most that memory about where things are could remove;
+more than half of the input comes after the first edit, the agent's own loop (every turn resends the growing context). That
+profile used one open model on one project and is an indication, not a guarantee.
+
 > Cairn does not choose models for your IDE. The IDE chooses. Cairn gives
 > it the memory and the prompts; the IDE does the thinking.
 
