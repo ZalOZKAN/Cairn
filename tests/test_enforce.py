@@ -206,3 +206,38 @@ def test_mcp_record_decision_takes_forbid_and_reports_a_bad_pattern(root):
         assert [r"\bprint\("] in [d["forbid"] for d in srv.project.memory.forbidden_for_path("b.py")]
     finally:
         os.chdir(cwd)
+
+
+# ---- enforcement at volume (simulated host payloads) --------------------------------
+
+def _payloads(root: Path, line: str, i: int) -> dict:
+    """One payload per way a host can add `line`: Claude Code Edit, Write and MultiEdit, Gemini CLI write_file and
+    replace, across a spread of file names and positions in the new text."""
+    path = f"pkg{i % 7}/mod{i}.py"
+    body = f"x = {i}\n{line}\ny = {i}\n"
+    shapes = [
+        {"tool_name": "Edit", "tool_input": {"file_path": str(root / path), "old_string": "x = 0\n", "new_string": body}},
+        {"tool_name": "Write", "tool_input": {"file_path": str(root / path), "content": body}},
+        {"tool_name": "MultiEdit", "tool_input": {"file_path": str(root / path), "edits": [
+            {"old_string": "a\n", "new_string": "b\n"}, {"old_string": "x = 0\n", "new_string": body}]}},
+        {"tool_name": "write_file", "tool_input": {"file_path": path, "content": body}},
+        {"tool_name": "replace", "tool_input": {"file_path": path, "old_string": "x = 0\n", "new_string": body}},
+    ]
+    return {"cwd": str(root), **shapes[i % len(shapes)]}
+
+
+def test_a_hundred_forbidden_edits_are_all_blocked_and_a_hundred_clean_ones_all_pass(root):
+    m = _mem(root)
+    m.record_decision("Retry is hand-rolled", reasoning="tenacity hammered APIs", forbid=[TENACITY])
+    forbidden = ["import tenacity", "from tenacity import retry", "  import tenacity", "from tenacity import (retry,",
+                 "\timport tenacity as t"]
+    clean = ["import time", "# tenacity is not used here", "retry_count = 3", "from tenacityx import y", "print('tenacity')"]
+    blocked = passed = 0
+    for i in range(100):
+        got = enforce.edit_from_hook(_payloads(root, forbidden[i % 5], i), root)
+        assert got is not None, i
+        blocked += bool(enforce.violations(m, *got))
+        got = enforce.edit_from_hook(_payloads(root, clean[i % 5], i), root)
+        assert got is not None, i
+        passed += not enforce.violations(m, *got)
+    assert (blocked, passed) == (100, 100)

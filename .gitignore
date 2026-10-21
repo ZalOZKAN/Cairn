@@ -27,5 +27,5 @@ CHANGELOG.md
 # it into this MIT repo; fetched on demand by scripts/download_benchmark_data.py)
 .bench_cache/
 
-# Personal working rules for the agents that work on this repo
-AGENTS.md
+# Personal working rules for the agents that work on this repo (AGENTS.md stays public: it only points to the decisions)
+CLAUDE.md

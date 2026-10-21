@@ -6,9 +6,9 @@
 
 ## What this is
 
-A small, fixture-driven pytest module that exercises the invariants from
-the `.cairn/` folder format (sections 1 to 12). It is intentionally
-implementation-agnostic, every check reads or writes via the spec
+A small, fixture-driven pytest module that exercises the invariants of the
+`.cairn/` folder format. It is intentionally
+implementation-agnostic: every check reads or writes via the spec
 contract, not via Cairn's internal API.
 
 If your alternative tool reads or writes a `.cairn/` folder, you can fork
