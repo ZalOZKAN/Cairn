@@ -166,6 +166,10 @@ class DecisionsMixin:
             {"source": self._redact(e.get("source")), "claim": self._redact(e.get("claim"))}
             for e in (evidence or [])
         ] or None
+        for ev in evidence or []:
+            ref = self._evidence_ref(ev["source"])
+            if ref and not self._ref_head(ref):
+                raise ValueError(f"evidence cites {ref}, which does not exist")
 
         # Active decisions are read by every agent as instructions; one that
         # looks like an injection is stored inactive until a human approves it
@@ -277,6 +281,27 @@ class DecisionsMixin:
             self._refresh_agents_md(exclude_ids=exclude or None)
         return f"g{new_id}" if is_global else new_id
 
+    @staticmethod
+    def _evidence_ref(source: str | None) -> str | None:
+        """The id in an evidence source written as `ref:<id|g<n>|uid>`, else None."""
+        s = (source or "").strip()
+        return s[4:].strip() or None if s.lower().startswith("ref:") else None
+
+    def _ref_head(self, ref: str) -> dict | None:
+        """One-line view of a cited entry: its id, text and whether it is still valid."""
+        try:
+            db_path, num_id = self._resolve_scope_id(ref)
+        except ValueError:
+            return None
+        with sqlite_connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT prompt, valid_until, invalidated_reason FROM memories WHERE id=?", (num_id,)
+            ).fetchone()
+        if not row:
+            return None
+        status = "active" if row[1] is None else f"invalidated: {row[2] or 'no reason recorded'}"
+        return {"id": f"g{num_id}" if db_path == self.global_db_path else num_id, "text": row[0], "status": status}
+
     def get_full(self, mem_id: int | str) -> dict | None:
         """Return a full memory row including evidence + supersedes chain pointers."""
         import json as _json
@@ -320,7 +345,10 @@ class DecisionsMixin:
             "forbid": _json.loads(row[17]) if row[17] else [],
             "scope": "global" if is_global else "project",
             "supersedes": _tag(supersedes_id[0]) if supersedes_id else None,
-            "evidence": evidence,
+            "evidence": [
+                {**e, "cited": self._ref_head(ref)} if (ref := self._evidence_ref(e["source"])) else e
+                for e in evidence
+            ],
             "stale": None if is_global else self.staleness(num_id),
         }
         return out

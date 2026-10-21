@@ -66,6 +66,23 @@ _UID_RE = re.compile(r"\d{8}-[0-9a-f]{6}")
 AUTO_FULL_CHARS = 3200
 
 
+INDEX_HEAD_CHARS = 120
+
+
+def entry_header(display_id: int | str, kind: str, timestamp: str | None, scope: str = "project", flag: str = "") -> str:
+    """`[#12 · decision · 2026-10-21]`: the line that names a recalled entry, in full and index output alike."""
+    tag = " · global" if scope == "global" else ""
+    return f"[#{display_id} · {kind} · {(timestamp or 'unknown')[:10]}{tag}{flag}]"
+
+
+def index_line(header: str, text: str) -> str:
+    """One line per entry: the header plus the first line of the text, cut at `INDEX_HEAD_CHARS`."""
+    head = " ".join((text or "").split())
+    if len(head) > INDEX_HEAD_CHARS:
+        head = head[: INDEX_HEAD_CHARS - 3].rstrip() + "..."
+    return f"{header} {head}"
+
+
 def _as_utc(value: str) -> datetime:
     """Parse an ISO-8601 string; naive values are taken as UTC."""
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

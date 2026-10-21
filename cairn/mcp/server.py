@@ -45,12 +45,14 @@ from typing import Any
 from cairn import __version__
 from cairn.memory.decision_files import format_brief
 from cairn.memory.injector import AGENT_GUIDE
+from cairn.memory.storage import entry_header, index_line
 from cairn.memory.stats import bump
 
 
 # What `tools/list` advertises when `mcp.tools: core` is set. Every tool stays callable by name either way; the
 # profile only decides what is sent to the host with each request (about 2,000 tokens for all 14, about 1,000 for these).
-CORE_TOOLS = ("record_decision", "check_approach", "decisions_for_path", "memory_save", "memory_context", "memory_invalidate")
+CORE_TOOLS = ("record_decision", "check_approach", "decisions_for_path", "memory_save", "memory_context", "memory_invalidate",
+              "memory_get")
 
 
 def tool_profile(project_dir: Path) -> str:
@@ -309,7 +311,8 @@ class CairnMCPServer:
                   "Decay-aware recall of past memory relevant to a query.",
                   {"query": _str("Search query"),
                    "limit": _int("Max entries", default=5),
-                   "path": _str("Workspace-relative path: also matches its ancestors. Omit for repo-wide.")},
+                   "path": _str("Workspace-relative path: also matches its ancestors. Omit for repo-wide."),
+                   "detail": _detail()},
                   required=["query"]),
             _tool("memory_store",
                   "Store a memory entry. Use scope='global' unprompted for a user preference that would hold in any "
@@ -324,10 +327,11 @@ class CairnMCPServer:
                   "Most recent valid memory entries.",
                   {"n": _int("How many", default=10)}),
             _tool("memory_search",
-                  "Substring search across memory.",
-                  {"query": _str("Substring"),
+                  "Keyword search across memory.",
+                  {"query": _str("Keywords or a substring"),
                    "limit": _int("Max results", default=10),
-                   "path": _str("Workspace-relative path to scope to")},
+                   "path": _str("Workspace-relative path to scope to"),
+                   "detail": _detail()},
                   required=["query"]),
             _tool("memory_invalidate",
                   "Retire a memory entry by id (kept, not deleted).",
@@ -381,7 +385,7 @@ class CairnMCPServer:
                   required=["path"]),
             _tool("memory_get",
                   "Full record: reasoning, alternatives, evidence, supersedes chain.",
-                  {"id": _str("Number, 'g<n>' for a global entry, or a uid like 20261021-a1b2c3")},
+                  {"id": _str("Number, 'g<n>' (global) or uid; comma-separate up to 10")},
                   required=["id"]),
             _tool("memory_thread",
                   "A decision topic over time: pass id (supersedes chain) or topic.",
@@ -409,7 +413,8 @@ class CairnMCPServer:
 
 def _h_recall(srv: CairnMCPServer, args: dict) -> str:
     out = srv.project.memory.recall(
-        args.get("query", ""), limit=int(args.get("limit", 5)), path=args.get("path") or None
+        args.get("query", ""), limit=int(args.get("limit", 5)), path=args.get("path") or None,
+        detail=args.get("detail", DEFAULT_DETAIL),
     )
     return out or "(no relevant memory)"
 
@@ -460,6 +465,10 @@ def _h_search(srv: CairnMCPServer, args: dict) -> str:
     rows = srv.project.memory.search(
         args.get("query", ""), limit=int(args.get("limit", 10)), path=args.get("path") or None
     )
+    if args.get("detail", DEFAULT_DETAIL) == "index":
+        return "\n".join(
+            index_line(entry_header(r["id"], r["kind"], r["timestamp"], r["scope"]), r["prompt"]) for r in rows
+        ) or "(no matches)"
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
 
@@ -587,9 +596,31 @@ def _record(srv: CairnMCPServer, args: dict, supersedes: str | None) -> int | st
     )
 
 
+def record_json(value: dict | list) -> str:
+    """Compact JSON for `memory_get`. Lossless: only null and "" fields and a decision's `response` when it repeats its
+    `reasoning` are left out, so a missing key reads as empty. Lists stay (`alternatives`, `evidence`, `forbid`) and so
+    does `valid_until`: null means active."""
+    def compact(rec: dict) -> dict:
+        out = {k: v for k, v in rec.items() if k == "valid_until" or v is not None and v != ""}
+        if rec.get("kind") == "decision" and rec.get("response") == rec.get("reasoning"):
+            out.pop("response", None)
+        return out
+    data = [compact(r) for r in value] if isinstance(value, list) else compact(value)
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
 def _h_memory_get(srv: CairnMCPServer, args: dict) -> str:
-    full = srv.project.memory.get_full(args["id"])
-    return json.dumps(full, ensure_ascii=False, indent=2) if full else "(not found)"
+    ids = [i.strip() for i in str(args["id"]).split(",") if i.strip()]
+    if len(ids) <= 1:
+        full = srv.project.memory.get_full(args["id"])
+        return record_json(full) if full else "(not found)"
+    out = []
+    for i in ids[:MAX_GET_IDS]:
+        try:
+            out.append(srv.project.memory.get_full(i) or {"id": i, "error": "not found"})
+        except ValueError as exc:
+            out.append({"id": i, "error": str(exc)})
+    return record_json(out)
 
 
 def _h_memory_thread(srv: CairnMCPServer, args: dict) -> str:
@@ -656,6 +687,14 @@ def _int(description: str, default: Any = None) -> dict:
     if default is not None:
         s["default"] = default
     return s
+
+
+DEFAULT_DETAIL = "full"
+MAX_GET_IDS = 10
+
+
+def _detail() -> dict:
+    return {"type": "string", "description": "index (one line each, open via memory_get) or full"}
 
 
 def _tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:

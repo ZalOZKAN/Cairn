@@ -447,11 +447,11 @@ def test_names_and_required_parameters_did_not_change(srv):
 
 def test_the_tool_definitions_stay_small(srv):
     """Descriptions go out with every request of every host. A rough ceiling (about 4 characters per token) that fails
-    when someone grows them again: 14 tools under 7,200 characters, the core 6 under 4,200."""
+    when someone grows them again: 14 tools under 7,200 characters, the core 7 under 4,400."""
     from cairn.mcp.server import CORE_TOOLS
     size = lambda tools: sum(len(json.dumps(t, ensure_ascii=False)) for t in tools)   # noqa: E731
     assert size(srv._tools) < 7200
-    assert size([t for t in srv._tools if t["name"] in CORE_TOOLS]) < 4200
+    assert size([t for t in srv._tools if t["name"] in CORE_TOOLS]) < 4400
 
 
 def test_init_writes_the_core_profile_for_new_projects():
@@ -508,3 +508,106 @@ def test_injected_decision_is_quarantined_and_boot_warns(srv):
 def test_no_mcp_tool_can_approve_a_quarantined_decision(srv):
     tools = srv._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
     assert tools and not any("approve" in t["name"] or "quarantine" in t["name"] for t in tools)
+
+
+def _decide(srv, text, **extra):
+    return json.loads(_call(srv, "record_decision", {"decision": text, **extra}))["id"]
+
+
+def test_recall_index_is_one_short_line_per_entry_and_full_is_unchanged(srv):
+    long_text = "use httpOnly cookies for jwt " + "to avoid xss " * 40
+    mid = _decide(srv, long_text, reasoning="localStorage is readable by scripts")
+    index = _call(srv, "memory_recall", {"query": "jwt cookies", "detail": "index"})
+    assert index.startswith(f"[#{mid} · decision · ")
+    assert "\n" not in index and len(index) < 200 and index.endswith("...")
+    full = _call(srv, "memory_recall", {"query": "jwt cookies", "detail": "full"})
+    assert f"[#{mid} · decision · " in full and len(full) > len(index) + 200
+
+
+def test_search_returns_ids_that_memory_get_opens(srv):
+    mid = _decide(srv, "use PostgreSQL for orders", reasoning="transactions across payments")
+    rows = json.loads(_call(srv, "memory_search", {"query": "postgres orders"}))
+    assert [r["id"] for r in rows] == [mid] and rows[0]["kind"] == "decision"
+    assert json.loads(_call(srv, "memory_get", {"id": rows[0]["id"]}))["decision"] == "use PostgreSQL for orders"
+    line = _call(srv, "memory_search", {"query": "postgres orders", "detail": "index"})
+    assert line.startswith(f"[#{mid} · decision · ") and "use PostgreSQL" in line
+
+
+def test_search_still_finds_a_substring_the_keywords_miss(srv):
+    _decide(srv, "use httpOnly cookies")
+    rows = json.loads(_call(srv, "memory_search", {"query": "ttpOnl"}))
+    assert len(rows) == 1
+
+
+def test_search_marks_global_entries_with_a_g_id(srv):
+    gid = json.loads(_call(srv, "record_decision", {"decision": "always use uv for python", "scope": "global"}))["id"]
+    assert str(gid).startswith("g")
+    rows = json.loads(_call(srv, "memory_search", {"query": "python uv"}))
+    assert [r["id"] for r in rows] == [gid] and rows[0]["scope"] == "global"
+    assert json.loads(_call(srv, "memory_get", {"id": gid}))["scope"] == "global"
+
+
+def test_memory_get_takes_several_ids_and_reports_the_unknown_ones(srv):
+    a = _decide(srv, "use pnpm workspaces")
+    b = _decide(srv, "use ruff for linting")
+    out = json.loads(_call(srv, "memory_get", {"id": f"{a}, {b},9999,g1"}))
+    assert [o["id"] for o in out[:2]] == [a, b]
+    assert out[2] == {"id": "9999", "error": "not found"}
+    assert "error" in out[3]
+
+
+def test_memory_get_caps_a_batch_at_ten(srv):
+    ids = [_decide(srv, f"decision number {n} about widgets") for n in range(12)]
+    out = json.loads(_call(srv, "memory_get", {"id": ",".join(map(str, ids))}))
+    assert len(out) == 10
+
+
+def test_core_profile_lists_memory_get(srv):
+    from cairn.mcp.server import CORE_TOOLS
+    assert "memory_get" in CORE_TOOLS
+    _set_profile(srv, "core")
+    assert "memory_get" in {t["name"] for t in _list(srv)}
+
+
+def test_evidence_can_cite_an_entry_by_id_and_shows_its_status(srv):
+    cited = _decide(srv, "use SQLite for the store")
+    new = _decide(srv, "keep SQLite, add FTS5",
+                  evidence=[{"source": f"ref:{cited}", "claim": "the store decision"}])
+    assert isinstance(new, int)
+    ev = json.loads(_call(srv, "memory_get", {"id": new}))["evidence"][0]
+    assert ev["cited"] == {"id": cited, "text": "use SQLite for the store", "status": "active"}
+    _call(srv, "memory_invalidate", {"id": cited, "reason": "moved to Postgres"})
+    ev = json.loads(_call(srv, "memory_get", {"id": new}))["evidence"][0]
+    assert ev["cited"]["status"] == "invalidated: moved to Postgres"
+
+
+def test_evidence_citing_an_unknown_id_is_refused(srv):
+    out = json.loads(_call(srv, "record_decision", {
+        "decision": "something new", "evidence": [{"source": "ref:4242", "claim": "x"}]}))
+    assert "does not exist" in out["error"]
+    assert json.loads(_call(srv, "memory_search", {"query": "something new"})) == []
+
+
+def test_memory_get_output_is_compact_and_loses_nothing(srv):
+    mid = _decide(srv, "use Alembic for migrations", reasoning="autogenerate plus review",
+                  alternatives=[{"option": "raw SQL", "rejected_because": "no history"}])
+    raw = srv.project.memory.get_full(mid)
+    text = _call(srv, "memory_get", {"id": mid})
+    assert "\n" not in text
+    got = json.loads(text)
+    assert "response" not in got and got["valid_until"] is None
+    assert not any(v is None or v == "" for k, v in got.items() if k != "valid_until")
+    for key, value in raw.items():
+        if key == "response":
+            assert value == raw["reasoning"]
+        elif value is None or value == "":
+            assert key not in got or key == "valid_until"
+        else:
+            assert got[key] == value
+
+
+def test_memory_get_keeps_response_when_it_is_not_a_copy_of_the_reasoning(srv):
+    _call(srv, "memory_store", {"prompt": "topic", "response": "a fact about the build"})
+    rows = json.loads(_call(srv, "memory_search", {"query": "build fact"}))
+    got = json.loads(_call(srv, "memory_get", {"id": rows[0]["id"]}))
+    assert got["response"] == "a fact about the build" and got["kind"] == "memory"

@@ -20,8 +20,8 @@ from cairn.memory.decay import decayed_score, DEFAULT_HALF_LIFE_DAYS
 from cairn.memory.decision_sync import DecisionFilesMixin
 from cairn.memory.decisions import DecisionsMixin
 from cairn.memory.storage import (  # noqa: F401  (re-exported for existing imports)
-    AUTO_FULL_CHARS, LEGACY_SHARED_DB, _SENTINEL, _UID_RE, _as_utc, forbid_to_json,
-    resolve_db_path, sqlite_connect,
+    AUTO_FULL_CHARS, LEGACY_SHARED_DB, _SENTINEL, _UID_RE, _as_utc, entry_header, forbid_to_json,
+    index_line, resolve_db_path, sqlite_connect,
 )
 from cairn.security.guard import mask_secrets
 
@@ -372,7 +372,8 @@ class Memory(DecisionsMixin, DecisionFilesMixin):
 
     # ------------------------- recall -------------------------
 
-    def recall(self, prompt: str, limit: int | None = None, path: str | None = None) -> str:
+    def recall(self, prompt: str, limit: int | None = None, path: str | None = None, detail: str = "full") -> str:
+        """`detail="index"`: one line per entry (id, kind, date, first 120 characters); fetch the rest with `get_full`."""
         if not self.enabled:
             return ""
         limit = limit or self.max_results
@@ -443,20 +444,18 @@ class Memory(DecisionsMixin, DecisionFilesMixin):
             return ""
         formatted = []
         for r in results[:limit]:
-            date_str = "unknown"
-            if r["timestamp"]:
-                date_str = r["timestamp"][:10]
             display_id = f"g{r['id']}" if r.get("scope") == "global" else r["id"]
-            tag = " · global" if r.get("scope") == "global" else ""
             flag = ""
             if r.get("scope") == "project" and r["kind"] == "decision":
                 st = self.staleness(r["id"])
                 if st:
                     flag = f" · NEEDS REVIEW: {st['commits_since']} commits touched {st['path']} since recorded"
-            header = f"[#{display_id} · {r['kind']} · {date_str}{tag}{flag}]"
-            content = r["content"][:600]
-            formatted.append(f"{header}\n{content}")
-        return "\n---\n".join(formatted)
+            header = entry_header(display_id, r["kind"], r["timestamp"], r.get("scope", "project"), flag)
+            if detail == "index":
+                formatted.append(index_line(header, r["prompt"]))
+            else:
+                formatted.append(f"{header}\n{r['content'][:600]}")
+        return ("\n" if detail == "index" else "\n---\n").join(formatted)
 
     def _sqlite_keyword_search(
         self,
@@ -562,30 +561,40 @@ class Memory(DecisionsMixin, DecisionFilesMixin):
         return [{"timestamp": r[0], "prompt": r[1], "response": r[2]} for r in rows]
 
     def search(self, query: str, limit: int = 10, path: str | None = None) -> list[dict]:
+        """Ranked keyword matches first (FTS5, same ranking as `recall`), then substring matches the keywords missed.
+        Every result carries the id `get_full` takes (`g<n>` for global)."""
         path_sql, path_params = self._path_filter_sql(path)
-        with sqlite_connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT timestamp, prompt, response FROM memories "
-                "WHERE (prompt LIKE ? OR response LIKE ?) AND valid_until IS NULL" + path_sql + " "
-                "ORDER BY id DESC LIMIT ?",
-                (f"%{query}%", f"%{query}%", *path_params, limit),
-            ).fetchall()
-        results = [{"timestamp": r[0], "prompt": r[1], "response": r[2], "scope": "project"} for r in rows]
-
+        scopes = [("project", self.db_path, self.fts5_enabled, path_sql, path_params)]
         if self.global_enabled:
-            with sqlite_connect(self.global_db_path) as conn:
-                g_rows = conn.execute(
-                    "SELECT timestamp, prompt, response FROM memories "
-                    "WHERE (prompt LIKE ? OR response LIKE ?) AND valid_until IS NULL "
-                    "ORDER BY id DESC LIMIT ?",
-                    (f"%{query}%", f"%{query}%", limit),
-                ).fetchall()
-            results.extend(
-                {"timestamp": r[0], "prompt": r[1], "response": r[2], "scope": "global"} for r in g_rows
-            )
-            results.sort(key=lambda r: r["timestamp"] or "", reverse=True)
+            scopes.append(("global", self.global_db_path, self.global_fts5_enabled, "", ()))
 
-        return results[:limit]
+        ranked: list[dict] = []
+        substring: list[dict] = []
+        seen: set[tuple[str, int]] = set()
+        for scope, db, fts5, sql, params in scopes:
+            for r in self._sqlite_keyword_search(
+                query, limit=limit, path=path if scope == "project" else None, db_path=db, fts5_enabled=fts5
+            ):
+                seen.add((scope, r["id"]))
+                ranked.append({"id": r["id"] if scope == "project" else f"g{r['id']}", "kind": r["kind"],
+                               "timestamp": r["timestamp"], "prompt": r["prompt"], "response": r["response"],
+                               "scope": scope, "score": r["score"]})
+            with sqlite_connect(db) as conn:
+                rows = conn.execute(
+                    "SELECT id, kind, timestamp, prompt, response FROM memories "
+                    "WHERE (prompt LIKE ? OR response LIKE ?) AND valid_until IS NULL" + sql + " "
+                    "ORDER BY id DESC LIMIT ?",
+                    (f"%{query}%", f"%{query}%", *params, limit),
+                ).fetchall()
+            for rid, kind, ts, rp, rr in rows:
+                if (scope, rid) not in seen:
+                    substring.append({"id": rid if scope == "project" else f"g{rid}", "kind": kind or "memory",
+                                      "timestamp": ts, "prompt": rp, "response": rr, "scope": scope})
+        ranked.sort(key=lambda r: r["score"], reverse=True)
+        substring.sort(key=lambda r: r["timestamp"] or "", reverse=True)
+        for r in ranked:
+            del r["score"]
+        return (ranked + substring)[:limit]
 
     def clear(self) -> int:
         self.flush()

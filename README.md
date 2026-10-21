@@ -40,7 +40,7 @@ only once you trust the folder: run `gemini` there once and choose Trust
 folder, or set `GEMINI_CLI_TRUST_WORKSPACE=true` in headless runs). If it
 detects Claude Code or Gemini CLI, it also asks
 once to register the MCP server and hooks for this
-project (run `cairn init` again later to be asked again), so the agent gets fourteen memory tools (six of them, the ones that carry decisions, in a new project's default `mcp.tools: core` profile; see `docs/CLI.md`) (`memory_recall`,
+project (run `cairn init` again later to be asked again), so the agent gets fourteen memory tools (seven of them, the ones that carry decisions, in a new project's default `mcp.tools: core` profile; see `docs/CLI.md`) (`memory_recall`,
 `memory_store`, `memory_invalidate`, `record_decision`, `decisions_for_path`,
 `memory_thread`, `check_approach`, and friends) after just a restart, no
 config file to hand-edit. Any other
