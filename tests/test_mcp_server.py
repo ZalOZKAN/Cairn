@@ -461,7 +461,7 @@ def test_init_writes_the_core_profile_for_new_projects():
         assert yaml.safe_load(text)["mcp"]["tools"] == "core"
 
 
-def test_memory_boot_auto_is_full_when_small_and_index_when_large(srv):
+def test_memory_context_auto_is_full_when_small_and_index_when_large(srv):
     _call(srv, "record_decision", {"decision": "Use SQLite for storage", "reasoning": "local and simple"})
     small = _call(srv, "memory_context", {})
     assert "local and simple" in small
@@ -508,10 +508,3 @@ def test_injected_decision_is_quarantined_and_boot_warns(srv):
 def test_no_mcp_tool_can_approve_a_quarantined_decision(srv):
     tools = srv._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
     assert tools and not any("approve" in t["name"] or "quarantine" in t["name"] for t in tools)
-
-
-def test_the_old_memory_boot_name_still_works_but_is_not_advertised(srv):
-    _call(srv, "record_decision", {"decision": "Use SQLite for storage"})
-    assert "Use SQLite for storage" in _call(srv, "memory_boot", {})
-    tools = srv._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
-    assert "memory_boot" not in {t["name"] for t in tools}

@@ -102,3 +102,9 @@ def test_a_yes_to_a_plain_status_message_is_not_a_signal(tmp_path):
     r = session_report(_write(tmp_path / "s.jsonl", [
         _assistant_text("Done. I fixed the typo and ran the tests."), _user("ok")]))
     assert r["signals"] == []
+
+
+def test_background_task_notifications_are_not_user_messages(tmp_path):
+    note = "<task-notification><task-id>x1</task-id><summary>from now on we use SQLite</summary></task-notification>"
+    r = session_report(_write(tmp_path / "s.jsonl", [_user(note), _user("tamam " + note)]))
+    assert r["signals"] == []

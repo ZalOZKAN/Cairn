@@ -47,7 +47,7 @@ def test_mcp_initialize_has_instructions_and_new_tool(root):
     srv.project.memory.record_decision("Use zod for validation", scope_path="src/api")
     out = srv._call_tool("decisions_for_path", {"path": "src/api/handler.ts"})
     assert "zod" in out
-    boot = srv._call_tool("memory_boot", {})
+    boot = srv._call_tool("memory_context", {})
     assert "Project decisions" in boot and "### `src/api/`" in boot and "Use zod for validation" in boot
 
 

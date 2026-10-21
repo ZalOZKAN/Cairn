@@ -156,6 +156,9 @@ Average tokens per session (input, cache reads, output, and billable input = inp
 ### Interface language
 Command help, review, measurement and dashboard text is available in en, tr, fr, es, de, zh and ja: set `CAIRN_LANG=tr`, or `ui: {language: tr}` in `.cairn/config.yaml`; otherwise the system locale decides. Option descriptions stay English. The text written into AGENTS.md around decisions follows `memory.agents_md.language` (set once by `cairn init`; falls back to `ui.language`, then English). It is deliberately not the locale of whoever runs `cairn sync`, so the block is identical on every machine; blocks in any supported language are read back.
 
+### `cairn memory probe --host <name> [--report]`
+A hook for finding out what an AI tool's hook actually sends. As a hook it reads the payload on stdin, appends one line to `.cairn/persistence/host-probe.jsonl` and prints nothing (so it injects nothing into the session): the event name, the payload's key names and types, whether a transcript path was given and is readable, the record types found at the end of that file and whether the assistant's text could be extracted. It never stores message text, paths or values. `--report` prints one row per host.
+
 ### `cairn memory import-adr <dir>`
 Import existing Architecture Decision Records (Nygard or MADR style) from a folder such as `docs/adr` as Cairn decisions. Proposed/draft ADRs are skipped; re-running is a no-op for ADRs already imported.
 

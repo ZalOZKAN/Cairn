@@ -55,11 +55,10 @@ def memory_save(
         console.print(f"  In progress: {len(extraction['tasks_in_progress'])} task(s)")
     if extraction.get("next_session_start"):
         console.print(f"  Resume point: {extraction['next_session_start'][:80]}")
-    console.print("\n[dim]Next session: cairn memory boot[/dim]")
+    console.print("\n[dim]Next session: cairn memory context[/dim]")
 
 
 @memory_app.command("context")
-@memory_app.command("boot", hidden=True)  # old name, kept so existing hooks keep working
 def memory_context(
     fmt: str = typer.Option("text", "--format", "-f", help="text | claude | json"),
     copy: bool = typer.Option(False, "--copy", "-c", help="Copy to clipboard"),
@@ -89,7 +88,7 @@ def memory_context(
             console.print(context)
     else:
         console.print(context)
-        console.print("\n[dim]Use cairn memory boot --copy to copy to clipboard[/dim]")
+        console.print("\n[dim]Use cairn memory context --copy to copy to clipboard[/dim]")
 
 
 @memory_app.command("status")
@@ -502,6 +501,39 @@ def memory_detect():
             "hookEventName": payload.get("hook_event_name") or "UserPromptSubmit",
             "additionalContext": text,
         }}))
+
+
+@memory_app.command("probe")
+def memory_probe(
+    host: str = typer.Option("unknown", "--host", help="Name of the tool running this hook"),
+    show: bool = typer.Option(False, "--report", help="Summarize what the probe has seen, per host"),
+):
+    """Hook probe: record only the structure of what a host's hook sends (never message text)."""
+    import json
+    import sys
+    from cairn.memory import probe
+
+    if show:
+        rows = probe.report(Path.cwd())
+        if not rows:
+            console.print("[yellow]No probe data yet.[/yellow]")
+            return
+        table = Table(title="Host probe", box=box.ROUNDED)
+        for col in ("Host", "Probes", "Events", "Prompt", "Transcript", "Assistant text", "Record types"):
+            table.add_column(col)
+        for r in rows:
+            table.add_row(r["host"], str(r["probes"]), ", ".join(r["events"]), f"{r['prompt_rate']:.0%}",
+                          f"{r['transcript_rate']:.0%}", f"{r['extraction_rate']:.0%}",
+                          ", ".join(f"{k}:{v}" for k, v in r["record_types"].items()) or "-")
+        console.print(table)
+        console.print("Payload keys seen: " + "; ".join(f"{r['host']}: {', '.join(r['keys'])}" for r in rows))
+        return
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        if isinstance(payload, dict):
+            probe.record(Path(payload.get("cwd") or Path.cwd()), payload, host)
+    except Exception:
+        pass
 
 
 @memory_app.command("nudge")

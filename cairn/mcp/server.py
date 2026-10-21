@@ -631,7 +631,6 @@ _TOOL_HANDLERS = {
     "memory_search": _h_search,
     "memory_invalidate": _h_invalidate,
     "memory_context": _h_boot,
-    "memory_boot": _h_boot,  # old name, still callable but no longer advertised
     "memory_status": _h_status,
     "check_approach": _h_check_approach,
     "decisions_for_path": _h_decisions_for_path,

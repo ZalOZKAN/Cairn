@@ -14,7 +14,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 
-# Local AI development docs, not for public repo
+# Local AI development docs, not for the public repo
 _dev/
 CHANGELOG.md
 
@@ -26,3 +26,6 @@ CHANGELOG.md
 # Downloaded external benchmark datasets (LoCoMo is CC BY-NC, never vendor
 # it into this MIT repo; fetched on demand by scripts/download_benchmark_data.py)
 .bench_cache/
+
+# Personal working rules for the agents that work on this repo
+AGENTS.md

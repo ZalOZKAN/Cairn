@@ -29,7 +29,7 @@ QUOTE_CHARS = 160
 
 
 _PASTED = re.compile(r"<pasted_content[^>]*>.*?</pasted_content[^>]*>", re.DOTALL)
-_TAGGED = re.compile(r"<(system-reminder|command-[a-z-]+|local-command-[a-z-]+)>.*?</\1>", re.DOTALL)
+_TAGGED = re.compile(r"<(system-reminder|task-notification|command-[a-z-]+|local-command-[a-z-]+)>.*?</\1>", re.DOTALL)
 _CONTINUATION = "This session is being continued from a previous conversation"
 
 
@@ -49,7 +49,7 @@ def _user_text(entry: dict) -> str | None:
     if isinstance(content, str):
         # Claude Code also logs slash-command output and caveats as user
         # records; they start with its own tags, never with what a person typed.
-        if content.lstrip().startswith(("<command-", "<local-command", "Caveat:", _CONTINUATION)):
+        if content.lstrip().startswith(("<command-", "<local-command", "<task-notification", "<system-reminder", "Caveat:", _CONTINUATION)):
             return None
         return content
     if isinstance(content, list):
@@ -106,7 +106,7 @@ def session_report(transcript: Path) -> dict[str, Any]:
         if said:
             last_assistant = said
         for name in _tool_uses(entry):
-            if "cairn" in name or name in ("record_decision", "memory_context", "memory_boot"):
+            if "cairn" in name or name in ("record_decision", "memory_context"):
                 cairn_calls += 1
             if name.endswith("record_decision"):
                 recorded += 1

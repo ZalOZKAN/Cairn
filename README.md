@@ -90,7 +90,7 @@ Cairn does not claim otherwise. It is for what such a file cannot do:
 - **Audit.** You can see what Cairn caught and what it missed.
 
 How much each of these is worth on your kind of project is being measured, not
-assumed; the plan and results will be published.
+assumed.
 
 ---
 
@@ -455,6 +455,9 @@ cairn memory usage --days 14            # tokens per session with vs without Cai
 cairn memory missed                     # decision-like messages that were never recorded
 cairn memory review                     # decisions quarantined as possible prompt injection
 cairn memory approve <id>               # release one (people only, no MCP tool)
+
+# Setup helpers
+cairn memory probe --report             # what a host's hook sends (structure only), for testing a new tool
 
 # Language
 cairn lang tr                           # en, tr, fr, es, de, zh, ja: screens, help and the AGENTS.md text
