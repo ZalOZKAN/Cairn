@@ -13,9 +13,8 @@
 
 **Do NOT open a public GitHub issue** for security problems. Instead:
 
-1. Use GitHub's **Security Advisory** feature:
-   `github.com/yourusername/cairn/security/advisories/new`
-2. Or email: `security@yourdomain.com`
+Use GitHub's **Security Advisory** feature:
+   `github.com/ZalOZKAN/Cairn/security/advisories/new`
 
 **Include in your report:**
 - Type of vulnerability (injection, authentication, etc.)

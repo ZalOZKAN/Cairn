@@ -7,7 +7,7 @@ Want to contribute to Cairn, great. This guide walks you through the process.
 ## Quick start
 
 ```bash
-git clone https://github.com/yourusername/cairn
+git clone https://github.com/ZalOZKAN/Cairn
 cd cairn
 pip install -e ".[dev]"
 pytest tests/   # confirm the tests pass
@@ -35,7 +35,7 @@ pytest tests/   # confirm the tests pass
 
 ### 1. Fork and branch
 ```bash
-git fork https://github.com/yourusername/cairn
+git fork https://github.com/ZalOZKAN/Cairn
 git checkout -b feat/my-feature    # for a feature
 git checkout -b fix/bug-description # for a bug fix
 ```
@@ -104,8 +104,7 @@ Types: `feat` `fix` `docs` `test` `chore` `refactor` `perf`
 
 **If you find a vulnerability:**
 - Do NOT open a public GitHub issue
-- Email `security@yourdomain.com`
-- Or use GitHub's private security advisory feature
+- Use GitHub's private security advisory feature (Security tab, Report a vulnerability)
 - Details: [SECURITY.md](SECURITY.md)
 
 **When writing code:**

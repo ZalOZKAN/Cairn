@@ -9,7 +9,7 @@ console = Console()
 
 _CONFIG_BASE = """\
 # Cairn config: drop this in any project's .cairn/ folder.
-# Docs: https://github.com/yourusername/cairn
+# Docs: https://github.com/ZalOZKAN/Cairn
 # Profile: {profile}. `cairn doctor` shows which features are on.
 
 memory:
