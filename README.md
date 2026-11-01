@@ -22,10 +22,13 @@ that lives next to your code.
 
 ---
 
+> **Status: experimental.** Cairn is not on PyPI yet. Install it from this repository
+> (below); the measurements behind the claims are in [BENCHMARKS.md](BENCHMARKS.md).
+
 ## 30-second install
 
 ```bash
-pip install cairn-memory
+pip install git+https://github.com/ZalOZKAN/Cairn
 cd ~/my-project
 cairn init                             # also adds a decisions block to AGENTS.md
 ```
@@ -47,8 +50,6 @@ config file to hand-edit. Any other
 host it detects (Cursor, Antigravity, Codex, ...) gets a one-line pointer to
 `cairn mcp config --host <name>`: print a snippet, paste it into that host's
 own MCP config, restart.
-
-![Claude Code demo](docs/demos/claude-code.gif)
 
 ---
 
@@ -157,8 +158,6 @@ click away. When global memory has entries, a "This Project" / "Global"
 tab switches which scope the graph and cards show, so the two never render
 on the same canvas at once. A project switcher in the header links out to
 other local Cairn projects that have generated their own dashboard.
-
-![Argue with past self](docs/demos/argue-with-past-self.gif)
 
 ## Don't repeat a mistake you've already made
 
