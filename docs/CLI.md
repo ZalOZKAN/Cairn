@@ -2,6 +2,61 @@
 
 This document provides a complete reference for the `cairn` command-line interface.
 
+## Cheat sheet
+
+Every command also runs as `python -m cairn <command>`. Use that on Windows when Smart App Control blocks the unsigned `cairn.exe` launcher that pip creates.
+
+```bash
+# Initialize
+cairn init                              # create .cairn/ and the AGENTS.md decisions block (no helper model)
+cairn init --profile cloud              # same, with the optional helper model on Groq
+cairn init --profile local              # same, with the optional helper model on a local Ollama server
+cairn init --yes                        # also register detected hosts without asking
+cairn init --dry-run                    # list every file init would create or change, write nothing
+cairn doctor                            # what is wired up here, and what is off
+cairn uninstall                         # list what Cairn wired into this project; --yes removes it (keeps .cairn/)
+
+# MCP server (what your IDE calls)
+cairn mcp serve                         # stdio JSON-RPC 2.0, Claude Code-compatible
+cairn mcp config --host claude-code     # print client config snippet
+cairn mcp config --host claude-code --with-hooks  # + opt-in SessionStart + PreToolUse hook recipe (doc-only)
+cairn mcp config --host gemini-cli --with-hooks   # + opt-in BeforeAgent decision-detector recipe (doc-only)
+
+# Decisions and handoff (same as the MCP tools, for any shell)
+cairn decide "Money is integer cents" --why "float rounding" --rejected float --because rounding --path shop
+cairn decide "No tenacity, hand-rolled backoff" --forbid "^\s*(import|from) tenacity\b"  # edits adding it are blocked
+cairn handoff "Added the price field" --next "Write apply_discount in shop/pricing.py"
+cairn sync                              # rewrite the AGENTS.md block (also automatic on every decision change)
+cairn check                             # exit 1 if the AGENTS.md block is missing or out of date (for CI)
+
+# Memory
+cairn memory context                    # print the session-start context for an agent
+cairn memory recent --n 10              # last 10 entries
+cairn memory search "jwt"               # substring search (auto-includes global.db matches)
+cairn memory search "jwt" --path apps/api  # scope results to a monorepo subdirectory
+cairn memory invalidate 42 --reason "schema migrated"
+cairn memory invalidate g7 --reason "changed my mind"  # 'g<n>' targets a global entry
+cairn memory manifest                   # generate context-manifest.md (uses helper model)
+cairn memory status                     # current task + handoff
+cairn memory dashboard --open           # single-file HTML decision dashboard
+cairn memory check "<approach>"         # has this already been rejected or abandoned?
+cairn memory for-diff main..HEAD        # which decisions apply to the files this diff changes (no arg: uncommitted work)
+cairn memory guard --staged             # exit 1 if staged changes add a line a decision forbids (pre-commit, CI)
+cairn memory import-native --source gemini  # Gemini CLI's GEMINI.md notes as decisions (personal ones go global)
+
+# Measure and review
+cairn memory usage --days 14            # tokens per session with vs without Cairn
+cairn memory missed                     # decision-like messages that were never recorded
+cairn memory review                     # decisions quarantined as possible prompt injection
+cairn memory approve <id>               # release one (people only, no MCP tool)
+
+# Setup helpers
+cairn memory probe --report             # what a host's hook sends (structure only), for testing a new tool
+
+# Language
+cairn lang tr                           # en, tr, fr, es, de, zh, ja: screens, help and the AGENTS.md text
+```
+
 ## Global Commands
 
 ### `cairn init`

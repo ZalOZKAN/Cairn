@@ -1,0 +1,237 @@
+# Using Cairn
+
+A walk-through of how Cairn is used day to day. The short version is in the [README](../README.md); every command is in the [CLI reference](CLI.md).
+
+## Setting up a project
+
+`cairn init` alone already gives every agent your decisions: they are kept
+in a managed block of `AGENTS.md`, the file Antigravity, Cursor, Codex and Copilot
+read on their own. Claude Code (2.1.277 or later) reads it when the project has no
+`CLAUDE.md`; when it has one, Cairn adds an `@AGENTS.md` import to it. Gemini CLI reads only `GEMINI.md` by default; once a
+project shows you use it (a `GEMINI.md` or `.gemini/` already there), `cairn
+init`/`cairn sync` also add AGENTS.md to its `context.fileName`, no manual
+settings edit needed (Gemini CLI applies a folder's `.gemini/settings.json`
+only once you trust the folder: run `gemini` there once and choose Trust
+folder, or set `GEMINI_CLI_TRUST_WORKSPACE=true` in headless runs). If it
+detects Claude Code or Gemini CLI, it also asks
+once to register the MCP server and hooks for this
+project (run `cairn init` again later to be asked again), so the agent gets fourteen memory tools (seven of them, the ones that carry decisions, in a new project's default `mcp.tools: core` profile; see `docs/CLI.md`) (`memory_recall`,
+`memory_store`, `memory_invalidate`, `record_decision`, `decisions_for_path`,
+`memory_thread`, `check_approach`, and friends) after just a restart, no
+config file to hand-edit. Any other
+host it detects (Cursor, Antigravity, Codex, ...) gets a one-line pointer to
+`cairn mcp config --host <name>`: print a snippet, paste it into that host's
+own MCP config, restart.
+
+## Switch tools, keep the memory
+
+Start in Antigravity, continue in Claude Code, finish in Cursor. What moves
+with the project:
+
+- **Decisions.** Every active decision is in `AGENTS.md`, in full, the moment
+  it is recorded, whichever tool recorded it (each record notes its source).
+  Superseded and invalidated decisions drop out, so the file never carries
+  two contradicting rules the way a hand-kept notes file does.
+- **Where you left off.** `.cairn/persistence/session-handoff.md` holds the
+  last agent's note (what was done, the next step) plus facts nobody has to
+  remember to write: branch, uncommitted files, last commits, latest
+  decisions. Those are refreshed whenever the MCP host closes.
+- **What a tool already learned on its own.** `cairn memory import-native`
+  reads Claude Code's per-project auto-memory or Cursor rules and offers them
+  as ordinary Cairn decisions, so a fact one tool picked up before Cairn was
+  even in the loop still reaches the rest. Gemini CLI's own memory is free-form
+  markdown the model edits itself, so it is not a source.
+
+`cairn doctor` shows what is wired up in the current project and what is off.
+
+---
+
+## Out of quota? Continue in another AI
+
+Everything Cairn knows is plain text in your repo, so any AI can pick up
+where the last one stopped, with or without Cairn installed on its side:
+
+| What | Where | Format |
+|---|---|---|
+| Every decision, one file each | `.cairn/decisions/<date>-<id>-<slug>.md` | Markdown with a YAML header (uid, date, status, scope path, supersedes) and sections for the decision, why, rejected alternatives, evidence |
+| All active decisions in one place | `AGENTS.md`, between `<!-- cairn:begin -->` and `<!-- cairn:end -->` | Markdown bullets |
+| Where the last session stopped | `.cairn/persistence/session-handoff.md` | Markdown: what was done, the next step, branch, uncommitted files, recent commits and decisions |
+| A search index | `.cairn/persistence/memory.db` | SQLite, rebuilt from the files with `cairn memory reindex`; never the source of truth |
+
+To hand over, tell the other AI:
+
+> Read AGENTS.md and .cairn/persistence/session-handoff.md, then continue the task.
+
+Before you stop, leave the note so the next one has it: the agent calls
+`memory_save`, or you run `cairn handoff "what was done" --next "next step"`.
+Most agents (Cursor, Codex, Copilot, Antigravity, Claude Code) read AGENTS.md
+on their own; the handoff note is the one file you point them at.
+
+**Editing by hand is fine.** Change, add or delete a decision file, or a
+bullet in the AGENTS.md block, and the next Cairn start (or `cairn sync`)
+reads it in: the files win over the database. Each such change is listed at
+the top of the next session context so it is never applied silently, and every
+imported change goes through the injection check below first.
+
+---
+
+## Argue with your past self
+
+The differentiator: Cairn records decisions with reasoning, alternatives,
+evidence, and a supersedes chain, so your agent can recall not just *what*
+you decided, but *why*, and what else you considered.
+
+```
+You:    The JWT cookie decision: was that final?
+Claude: [calls memory_thread("JWT") → finds chain ending at id 67]
+        [calls memory_get(67) → reads reasoning, alternatives, evidence]
+        "Yes, decision #67, recorded 2026-06-13. We chose httpOnly cookie
+         over localStorage to close the XSS token-exfiltration vector.
+         The prior approach (#42, localStorage) was superseded for that
+         reason. Would you like to revisit it?"
+
+You:    What's changed since then?
+Claude: [calls memory_thread(67) → no newer entries]
+        "Nothing, #67 is still the active decision."
+```
+
+Open the dashboard to see the full provenance graph in your browser:
+
+```bash
+cairn memory dashboard --open
+```
+
+Single self-contained HTML file. No server, no telemetry. A force-directed
+decision graph (nodes = decisions, arrows = supersedes chains, color =
+audit-score completeness, zoom/pan controls, double-click to pin a node in
+place), with a search box, status filters, and a card-grid list view a
+click away. When global memory has entries, a "This Project" / "Global"
+tab switches which scope the graph and cards show, so the two never render
+on the same canvas at once. A project switcher in the header links out to
+other local Cairn projects that have generated their own dashboard.
+
+## Don't repeat a mistake you've already made
+
+`check_approach` checks whether something like the approach on the table was
+already tried and rejected, or tried and abandoned:
+
+```
+You:    Should we cache this in localStorage?
+Claude: [calls check_approach("cache the auth token in localStorage")]
+        "That was rejected in decision #42: XSS token-exfiltration risk.
+         We went with httpOnly cookies instead (#67). Same concern would
+         apply here."
+```
+
+Read-only, no LLM call, works the same for project-scoped and
+`scope="global"` rejections: a convention you rejected in one project
+surfaces here too.
+
+---
+
+## Three ways to use it
+
+You don't have to pick one: they compose.
+
+| Tier | How it works | IDE-side setup |
+|---|---|---|
+| **AGENTS.md** | Every active decision, in full, in a managed block of `AGENTS.md`, rewritten on every change. Read at session start by Antigravity, Cursor, Codex and Copilot; by Claude Code when the project has no CLAUDE.md (if it has one, Cairn adds `@AGENTS.md` to it); by Gemini CLI once Cairn adds AGENTS.md to its `context.fileName` (automatic once the project shows you use Gemini CLI). | None: `cairn init` / `cairn sync` |
+| **CLI helpers** | `cairn decide`, `cairn handoff`, `cairn memory check "<approach>"`: the same as the MCP tools, for agents without MCP or for you. | None |
+| **MCP server** | `cairn mcp serve` over stdio. The IDE calls `memory_recall`, `record_decision`, `decisions_for_path` as tools. | Claude Code and Gemini CLI: `cairn init` offers to register it. Others: one config block, JSON or TOML depending on host (see `cairn mcp config`) |
+| **Hooks (optional)** | Claude Code: reminds the agent of a file's decisions right before it edits the file, once per decision per session, and flags a decision you state in passing ("from now on we use X") so it gets recorded. Gemini CLI: the second one only. | Registered by `cairn init` together with the MCP server, or by hand: `cairn mcp config --host claude-code --with-hooks` (or `--host gemini-cli`) |
+
+AGENTS.md works in every agent; the others add to them. Nothing in the
+block is truncated. It is a pure function of `.cairn/decisions/`, so it is
+identical on every machine; `cairn check` fails CI if it drifts. The cost
+grows with the number of active decisions, like any always-loaded file;
+Cairn keeps it to the active ones.
+
+**What it saves, and where.** Against a flat markdown file of decisions, delivering only the decisions that apply to the
+file being edited cut total tokens by about two thirds at 1,000 decisions in our benchmark (Claude Code; see `docs/CLI.md` for
+the setting and the numbers). The saving grows with the store. In a small store (a few hundred decisions or fewer) the flat file
+is already small, so no saving is claimed there: in a profile of a coding agent on a small open-source project (24 runs), about a
+sixth of the input tokens went to looking around before the first edit (about a third of the cost after prompt-cache discounts,
+because looking around happens before the cache warms up), which is the most that memory about where things are could remove;
+more than half of the input comes after the first edit, the agent's own loop (every turn resends the growing context). That
+profile used one open model on one project and is an indication, not a guarantee.
+
+> Cairn does not choose models for your IDE. The IDE chooses. Cairn gives
+> it the memory and the prompts; the IDE does the thinking.
+
+---
+
+## Is it working? Measure it on your own sessions
+
+Benchmarks are not your project. Cairn reads the transcripts Claude Code
+already keeps on your machine (nothing is sent anywhere) and answers three
+questions:
+
+```bash
+cairn memory usage     # average tokens per session (exact counts from the transcripts),
+                       # sessions that used Cairn vs sessions that did not
+cairn memory missed    # messages that read like a decision ("from now on...", "bundan sonra...")
+                       # with no record_decision after them: possible misses, quoted, for you to judge
+cairn memory dashboard --open   # the same numbers in the Health panel, plus every decision
+```
+
+**A fair two-week test.** Week one, work without Cairn (`cairn uninstall`
+leaves `.cairn/` in place; `cairn init` brings it back). Week two, with it,
+on the same kind of tasks. Then run `cairn memory usage --days 14`. Look at
+billable input per session (cache reads count a tenth, writes 1.25x, the way
+Anthropic bills), and count how often you had to re-explain something
+already decided. `cairn memory missed` shows the capture rate; a real decision
+in its list can be recorded right there with `cairn decide`.
+
+What it cannot tell you: whether a recorded decision is *right*. That is a
+review job, and the dashboard is built for it: decisions without reasoning
+are flagged, each one links to what it replaced, and `cairn memory stale`
+lists decisions whose code changed a lot since.
+
+Other hosts: only Claude Code transcripts are read for now; sessions in
+other tools are not measured yet.
+
+## Languages
+
+Decisions can be written in any language. Matching (duplicates, conflicts,
+"this sounds like a decision") understands English, Turkish, French, Spanish,
+German, Portuguese, Italian, Russian, Chinese and Japanese: letters in every
+script count, negations per language ("değil", "ne... pas", "nicht", "不要")
+keep "use X" and "don't use X" apart, and Chinese and Japanese text is split
+into character pairs since it has no spaces.
+
+Cairn itself speaks English, Türkçe, Français, Español, Deutsch, 中文 and
+日本語. To change it:
+
+```bash
+cairn lang            # show the current language and the choices
+cairn lang tr         # switch everything to Turkish and rewrite AGENTS.md
+cairn lang en --only agents   # keep your screens, write AGENTS.md text in English (mixed-language teams)
+```
+
+For one command only: `CAIRN_LANG=zh cairn memory --help`. The dashboard has
+its own language menu. In detail:
+
+- **Command help** (`cairn --help`, `cairn memory --help`) and the review,
+  measurement and dashboard screens follow `CAIRN_LANG`, then `ui.language`
+  in `.cairn/config.yaml`, then your system locale. The dashboard also has a
+  language menu. Option descriptions are still English.
+- **The text Cairn writes into AGENTS.md** around your decisions (the
+  instructions, "Why", "Rejected", section titles) follows
+  `memory.agents_md.language`. `cairn init` sets it once from your locale;
+  it is a project setting on purpose, so the block comes out the same on
+  every teammate's machine. A team that mixes languages can set it to `en`.
+  Switching it later is safe: Cairn reads blocks written in any of these
+  languages.
+
+---
+
+## Conflict detection (opt-in)
+
+Set `memory.conflict.enabled: true` and Cairn asks your configured helper
+model whether a new decision contradicts a prior high-importance one, in
+either DB, project or global. It only ever **warns** (a `conflicts` field on
+`record_decision`'s response); it never auto-invalidates anything, because
+false positives are common enough that a silent auto-invalidate would erode
+trust faster than it saves time. Off by default: it costs a helper-LLM call
+per decision, and users who run with `memory_helper_model: null` get nothing
+from it either way.

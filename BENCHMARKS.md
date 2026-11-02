@@ -119,3 +119,27 @@ on purpose, which is what keeps the false-positive rate at zero. Honest
 limits: one author wrote both the decisions and the probes, and keyword
 matching cannot bridge true synonyms ("linter" vs "ruff"). Real-usage
 numbers come from `cairn memory stats` during dogfooding.
+
+---
+
+## Decay actually helps recall
+
+`scripts/benchmark_decay.py` seeds 15 adversarial scenarios: for each topic
+an older "stale" decision (higher raw importance) competes with a newer
+"fresh" decision (lower importance, buried under noise so the sliding
+window can't rescue it). Metric: `recall@5`: fresh must rank above stale
+in top-5.
+
+| Configuration | recall@5 |
+|---|---|
+| Decay **off** | **0 %** (raw importance wins → stale always recalled) |
+| Decay **on**  | **100 %** (time-weighted score promotes fresh)         |
+| Delta         | **+100 pp**                                            |
+
+Synthetic, single-author seed, not LoCoMo, but it pins down the failure
+mode decay was built to fix. Run it: `python scripts/benchmark_decay.py`.
+
+A separate, external benchmark against real LoCoMo + LongMemEval-S subsets
+(evidence-recall@10, both backends, exact protocol published) lives in
+[the external benchmark above](#external-benchmark-locomo--longmemeval-evidence-recallk),
+including where Cairn's default backend currently falls short.
