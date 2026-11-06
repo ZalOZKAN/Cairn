@@ -156,7 +156,10 @@ class SessionManager:
     def load_handoff(self) -> str:
         """Return the contents of session-handoff.md."""
         if self.handoff_path.exists():
-            return self.handoff_path.read_text(encoding="utf-8")
+            text = self.handoff_path.read_text(encoding="utf-8")
+            from cairn.memory.handoff import commits_since
+            note = commits_since(self.persistence_dir.parent.parent, text)
+            return text + (f"\n\n_{note}_\n" if note else "")
         return ""
 
     # ── Long-lived memory files ────────────────────────────────────────

@@ -10,11 +10,14 @@ they are there even when the previous agent left no note.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 DECISIONS_HEADER = "## Recent Decisions"
+NOT_WORKING_HEADER = "## Did Not Work"
+COMMIT_LINE = re.compile(r"^Written at commit: ([0-9a-f]{7,40})$", re.M)
 TREE_HEADER = "## Working Tree"
 RECENT_DECISIONS = 5
 MAX_CHANGED_FILES = 30
@@ -34,6 +37,9 @@ def working_tree(project_dir: Path) -> str:
         return "Not a git repository."
     branch = _git(project_dir, "branch", "--show-current")
     lines = [f"Branch: {branch}" if branch else "Branch: (detached HEAD)"]
+    head = _git(project_dir, "rev-parse", "--short", "HEAD")
+    if head:
+        lines.append(f"Written at commit: {head}")
     status = [
         ln for ln in (_git(project_dir, "status", "--porcelain", "--untracked-files=all") or "").splitlines()
         if ln[3:] and not ln[3:].startswith(".cairn/")
@@ -50,6 +56,17 @@ def working_tree(project_dir: Path) -> str:
         lines.append("Last commits:")
         lines += [f"- {ln}" for ln in log.splitlines()]
     return "\n".join(lines)
+
+
+def commits_since(project_dir: Path, handoff_text: str) -> str | None:
+    """"N commits landed since this note was written", or None when nothing changed or the commit is unknown."""
+    m = COMMIT_LINE.search(handoff_text or "")
+    if not m:
+        return None
+    count = _git(project_dir, "rev-list", "--count", f"{m.group(1)}..HEAD")
+    if not count or not count.isdigit() or int(count) == 0:
+        return None
+    return f"{count} commit(s) landed since this note was written (it was written at {m.group(1)}); check `git log {m.group(1)}..HEAD` before trusting it."
 
 
 def recent_decisions(memory, n: int = RECENT_DECISIONS) -> str:
@@ -100,7 +117,7 @@ def refresh(memory, handoff_path: Path) -> Path:
     return handoff_path
 
 
-def save_note(project, summary: str = "", next_step: str = "", source: str | None = None) -> Path:
+def save_note(project, summary: str = "", next_step: str = "", source: str | None = None, did_not_work: str = "") -> Path:
     """Write the agent's note as the handoff, then add the git and decision
     sections. `source` is the tool that left it (MCP client name, "cli")."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -109,4 +126,7 @@ def save_note(project, summary: str = "", next_step: str = "", source: str | Non
         signed = (signed + "\n\n" if signed else "") + f"_Left by {source} at {now}._"
     extraction = {"next_session_start": next_step.strip()} if next_step.strip() else {}
     project.session.end_session(extraction, signed)
+    if did_not_work.strip():                      # what was tried and failed saves the next agent from trying it again
+        path = project.session.handoff_path
+        path.write_text(_replace_section(path.read_text(encoding="utf-8"), NOT_WORKING_HEADER, did_not_work.strip()), encoding="utf-8")
     return refresh(project.memory, project.session.handoff_path)

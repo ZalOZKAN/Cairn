@@ -76,6 +76,12 @@ def memory_context(
     notice = boot_notice(mem)
     if notice:
         decisions = notice + "\n\n" + decisions
+    from cairn.memory import inbox as _inbox
+    waiting = _inbox.summary(Path.cwd() / ".cairn")
+    if waiting["pending"]:
+        decisions = (f"Cairn inbox: {waiting['pending']} proposed decision(s) wait for confirmation "
+                     f"({waiting['ready']} seen several times). Review with `cairn memory inbox`. "
+                     "They are not decisions yet.\n\n") + decisions
     context = injector.build(fmt=fmt, include_memory=memory or None, decisions=decisions)
 
     if copy:
@@ -341,6 +347,9 @@ def memory_for_path(
         rows = _unseen_this_session(project_dir, payload["session_id"], rows)
     header = f"Cairn decisions that apply to {path}:"
     text = _full_entries(project.memory, rows, header) if full else format_brief(rows, header)
+    lesson_text = _lessons_text(project_dir, path)
+    if lesson_text:
+        text = (text + "\n" if text else "") + lesson_text
     if hook:
         bump(project_dir, "for_path_hook", hit=bool(text))
         if text:
@@ -454,6 +463,20 @@ def memory_guard(
     raise typer.Exit(code=1)
 
 
+def _lessons_text(project_dir: Path, path: str) -> str:
+    """The lessons that name this file, as lines for an agent; empty when there are none."""
+    from cairn.memory import lessons
+
+    try:
+        rel = Path(path).resolve().relative_to(project_dir.resolve()).as_posix()
+    except (ValueError, OSError):
+        rel = path
+    found = lessons.for_path(project_dir / ".cairn", rel)
+    if not found:
+        return ""
+    return f"Lessons for {rel}:\n" + "\n".join(f"- {i['text']} ({i['kind']}, confidence {lessons.confidence_now(i)})" for i in found[:5])
+
+
 def _unseen_this_session(project_dir: Path, session_id: str, rows: list[dict]) -> list[dict]:
     """Keep only decisions not yet shown in this session. Claude Code fires
     PreToolUse before every Edit, so without this the same reminder is
@@ -476,6 +499,20 @@ def _unseen_this_session(project_dir: Path, session_id: str, rows: list[dict]) -
     return fresh
 
 
+def _catch_correction(project_dir: Path, payload: dict) -> None:
+    """A message like "no, use X instead of Y" becomes a pending proposal (with the message as evidence). Never fails the hook."""
+    from cairn.memory import inbox
+    from cairn.memory.corrections import detect_correction
+
+    try:
+        found = detect_correction(str(payload.get("prompt") or ""))
+        if found:
+            inbox.add(project_dir / ".cairn", text=found["text"], evidence=found["evidence"], source="correction",
+                      rejected=found["rejected"])
+    except Exception:
+        return
+
+
 @memory_app.command("detect")
 def memory_detect():
     """Claude Code UserPromptSubmit / Gemini CLI BeforeAgent hook (reads hook
@@ -492,6 +529,7 @@ def memory_detect():
     project_dir = Path(payload.get("cwd") or Path.cwd())
     if not (project_dir / ".cairn").is_dir():
         return
+    _catch_correction(project_dir, payload)
     text = decision_language_reminder(payload)
     if text:
         # Echo the host's own event name (Claude Code: UserPromptSubmit,
@@ -623,6 +661,130 @@ def memory_capture(
             )
             recorded += 1
     console.print(f"[green]Recorded {recorded} of {len(proposals)} proposals.[/green]")
+
+
+@memory_app.command("inbox")
+def memory_inbox(
+    confirm_id: str = typer.Option("", "--confirm", help="Record this proposal as a decision"),
+    dismiss_id: str = typer.Option("", "--dismiss", help="Drop this proposal; it will not be proposed again"),
+):
+    """Proposed decisions waiting for confirmation. Nothing here is read by agents until it is confirmed."""
+    from cairn.core import Project
+    from cairn.memory import inbox
+
+    project = Project(load_session=False)
+    cairn_dir = project.project_dir / ".cairn"
+    inbox.purge(cairn_dir)
+    if confirm_id:
+        try:
+            console.print(f"Recorded as decision {inbox.confirm(cairn_dir, confirm_id, project.memory, recorded_by='cli')}.", markup=False)
+        except KeyError:
+            console.print("No such pending proposal.", markup=False)
+            raise typer.Exit(code=1)
+        return
+    if dismiss_id:
+        if not inbox.dismiss(cairn_dir, dismiss_id):
+            console.print("No such pending proposal.", markup=False)
+            raise typer.Exit(code=1)
+        console.print("Dropped.", markup=False)
+        return
+    rows = inbox.items(cairn_dir)
+    if not rows:
+        console.print("The inbox is empty.", markup=False)
+        return
+    for r in rows:
+        rejected = f"\n  rejected: {', '.join(r['rejected'])}" if r.get("rejected") else ""
+        console.print(f"{r['id']}  (seen {r.get('seen', 1)}x, {r.get('source')})\n  {r['text']}\n  why: {r.get('why') or '-'}\n"
+                      f"  evidence: {r.get('evidence') or '-'}{rejected}", markup=False)
+
+
+@memory_app.command("learn")
+def memory_learn(
+    hook: bool = typer.Option(False, "--hook", help="Claude Code Stop or PreCompact hook: read the hook JSON on stdin; silent"),
+    transcript: str = typer.Option("", "--transcript", help="A transcript file to learn from (without --hook)"),
+):
+    """Let the helper model read the new part of a session and put the decisions it finds in the inbox (never straight into the
+    decisions). Needs a helper model; without one nothing happens."""
+    import json
+    import sys
+    from cairn.core import Project
+    from cairn.memory.learn import learn
+
+    session_id, project_dir, path = "manual", Path.cwd(), Path(transcript) if transcript else None
+    source = "stop"
+    if hook:
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError:
+            return
+        project_dir = Path(payload.get("cwd") or project_dir)
+        path = Path(payload.get("transcript_path") or "")
+        session_id = str(payload.get("session_id") or "hook")
+        source = "compact" if payload.get("hook_event_name") == "PreCompact" else "stop"
+        if not (project_dir / ".cairn").is_dir():
+            return
+    if not path or not path.is_file():
+        if not hook:
+            console.print("Give a transcript file with --transcript, or use --hook.", markup=False)
+            raise typer.Exit(code=1)
+        return
+    try:
+        project = Project(project_dir=project_dir, load_session=False)
+        result = learn(project_dir / ".cairn", path, session_id, project.helper_call, source=source)
+    except Exception:
+        if hook:
+            return                                       # a hook must never fail a session
+        raise
+    if hook:
+        return
+    if not result["available"]:
+        console.print("No helper model available (memory_helper_model unset or unreachable). Nothing was read.", markup=False)
+        raise typer.Exit(code=1)
+    console.print(f"Added {result['added']} proposal(s), {result['repeats']} seen again. Review with: cairn memory inbox", markup=False)
+
+
+@memory_app.command("lesson")
+def memory_lesson(
+    text: str = typer.Argument(..., help="What was learned, in one sentence"),
+    files: list[str] = typer.Option(..., "--file", "-f", help="A file or folder it concerns (repeat for more)"),
+    kind: str = typer.Option("pitfall", "--type", help="pitfall | pattern | preference"),
+    origin: str = typer.Option("observed", "--origin", help="user-stated | observed | inferred"),
+    confidence: int = typer.Option(6, "--confidence", help="1 to 10"),
+):
+    """Store a lesson about particular files; it is shown only when one of them is touched."""
+    from cairn.memory import lessons
+
+    try:
+        item = lessons.record(Path.cwd() / ".cairn", text, files, kind=kind, origin=origin, confidence=confidence)
+    except ValueError as exc:
+        console.print(f"Not stored: {exc}", markup=False)
+        raise typer.Exit(code=1)
+    console.print(f"Lesson {item['id']} stored (seen {item['seen']}x).", markup=False)
+
+
+@memory_app.command("lessons")
+def memory_lessons(
+    path: str = typer.Argument("", help="Only the lessons for this file or folder"),
+    forget: str = typer.Option("", "--forget", help="Delete the lesson with this id"),
+    stale: bool = typer.Option(False, "--stale", help="List lessons none of whose files exist any more"),
+):
+    """List, find stale or delete lessons."""
+    from cairn.memory import lessons
+
+    cairn_dir = Path.cwd() / ".cairn"
+    if forget:
+        if not lessons.forget(cairn_dir, forget):
+            console.print("No such lesson.", markup=False)
+            raise typer.Exit(code=1)
+        console.print("Deleted.", markup=False)
+        return
+    rows = lessons.stale(cairn_dir, Path.cwd()) if stale else (lessons.for_path(cairn_dir, path) if path else lessons._all(cairn_dir))
+    if not rows:
+        console.print("No lessons.", markup=False)
+        return
+    for r in rows:
+        console.print(f"{r['id']}  {r['kind']}, {r['origin']}, confidence {lessons.confidence_now(r)}, seen {r.get('seen', 1)}x\n"
+                      f"  {r['text']}\n  files: {', '.join(r['files'])}", markup=False)
 
 
 @memory_app.command("stats")

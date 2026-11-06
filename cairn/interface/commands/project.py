@@ -204,14 +204,15 @@ def decide_cmd(
 def handoff_cmd(
     summary: str = typer.Argument("", help="What was done this session"),
     next_step: str = typer.Option("", "--next", "-n", help="The next concrete step"),
+    did_not_work: str = typer.Option("", "--did-not-work", help="What was tried and failed, so the next session does not repeat it"),
 ):
     """Leave a note for the next session, in any tool (shell equivalent of MCP memory_save)."""
     from cairn.memory import handoff
-    if not summary and not next_step:
-        console.print("[red]Give a summary, --next, or both.[/red]")
+    if not summary and not next_step and not did_not_work:
+        console.print("[red]Give a summary, --next, --did-not-work, or a mix.[/red]")
         raise typer.Exit(code=1)
     project = _project()
-    path = handoff.save_note(project, summary, next_step, source="cli")
+    path = handoff.save_note(project, summary, next_step, source="cli", did_not_work=did_not_work)
     console.print("[green]Handoff written:[/green]", end=" ")
     console.print(str(path), markup=False, soft_wrap=True)
 

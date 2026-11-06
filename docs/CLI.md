@@ -88,8 +88,8 @@ Record a decision from any shell; the same as the MCP `record_decision` tool, fo
   - `--importance, -i <1|2|3>`: Default 2.
   - `--forbid <regex>`: A pattern that code added under this decision must not match (repeatable), for a hard rule such as `--forbid '^\s*(import|from) tenacity\b'`. Checked against added lines only, never code already there: the per-file `PreToolUse` hook blocks such an edit, and `cairn memory guard` flags it in a diff. An invalid regex is rejected before anything is recorded.
 
-### `cairn handoff [summary] --next <step>`
-Leave a note for the next session, in any tool; the same as the MCP `memory_save` tool with a summary. Writes `.cairn/persistence/session-handoff.md` with the note plus sections Cairn fills in itself: the latest decisions (with the tool that recorded each) and the working tree (branch, uncommitted files, last commits). The MCP server refreshes those two sections whenever the host closes it, keeping the note.
+### `cairn handoff [summary] --next <step> [--did-not-work <text>]`
+Leave a note for the next session, in any tool; the same as the MCP `memory_save` tool with a summary. `--did-not-work` adds a "Did Not Work" section so the next session does not repeat a failed attempt. The working-tree part records the commit it was written at (`Written at commit: <hash>`); when the note is read later, it says how many commits landed since. Writes `.cairn/persistence/session-handoff.md` with the note plus sections Cairn fills in itself: the latest decisions (with the tool that recorded each) and the working tree (branch, uncommitted files, last commits). The MCP server refreshes those two sections whenever the host closes it, keeping the note.
 
 ### `cairn doctor`
 Show what Cairn does in this project and what is off, with the reason: decision files, the AGENTS.md block, whether Claude Code will see it (CLAUDE.md import), whether Cairn is registered in `.mcp.json` and which of its 4 hooks are present in `.claude/settings.json`, the same for Gemini CLI (`.gemini/settings.json`: server, AGENTS.md in `context.fileName`, the `BeforeAgent` hook; a settings file that is not plain JSON is named as such rather than guessed at), any other detected host not yet set up, the last handoff, and the helper model (which features are skipped without one, or why a configured one will not work).
@@ -187,6 +187,15 @@ Claude Code `Stop` hook (reads the hook JSON on stdin). When the session has mad
 
 ### `cairn memory capture --from-git <range>`
 Reads `git log` for a revision range (default `HEAD~20..HEAD`), asks the helper model to propose design decisions, and shows each one for you to confirm. Nothing is recorded without a yes. Exits with a message when no helper model is configured.
+
+### `cairn memory inbox [--confirm <id>] [--dismiss <id>]`
+Proposed decisions that wait for confirmation. A proposal comes from the correction catcher (a prompt such as "no, use pytest instead of unittest" or "lodash kullanma" is added with the message as its evidence and the rejected option filled in), from `cairn memory learn`, or from an agent. Nothing in the inbox is read by agents or written to `AGENTS.md` until `--confirm` records it as a decision. A repeated proposal raises its `seen` count instead of adding a copy; a dismissed one is not proposed again; unconfirmed ones are deleted after 30 days. Files live in `.cairn/inbox/`. The session-start context says how many proposals wait.
+
+### `cairn memory learn [--hook | --transcript <file>]`
+The helper model reads only the part of a transcript that is new since the last run (a saved byte offset per session) and proposes decisions. A proposal is kept only when its evidence is a quote that really occurs in that text. Everything goes to the inbox. Without a helper model nothing happens and the hook never fails a session. As an opt-in hook, run `cairn memory learn --hook` on Claude Code's `Stop` (and `PreCompact`) event; it is not part of the `--with-hooks` recipe.
+
+### `cairn memory lesson <text> --file <path>` and `cairn memory lessons [path] [--stale] [--forget <id>]`
+A lesson is a small thing learned about particular files (`--type pitfall|pattern|preference`, `--origin user-stated|observed|inferred`, `--confidence 1-10`). It is stored in `.cairn/lessons/` and shown by `cairn memory for-path` (and its hook) only when one of its files is touched. Lessons that were not stated by the user lose one point of confidence per 30 days and disappear from the output at 0; `--stale` lists lessons none of whose files exist any more.
 
 ### `cairn memory stats`
 Local usage counters from `.cairn/persistence/stats.json` (gitignored, never sent anywhere): how many times the agent called each Cairn MCP tool and how often it returned something, plus the same two numbers for the hooks Cairn registers (`guard`: edits checked and blocked; `for_path_hook`: runs and runs that injected a decision), and the number of decision files. Use it to judge whether the agent is actually recording and using decisions.
